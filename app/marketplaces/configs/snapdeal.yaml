@@ -1,0 +1,44 @@
+key: snapdeal
+name: Snapdeal
+enabled: true
+base_url: https://www.snapdeal.com
+search_url_pattern: "https://www.snapdeal.com/search?keyword={query}&categoryId=0"
+trust_score_base: 0.62
+max_results: 5
+wait_strategy: "networkidle"
+needs_scroll: true
+ready_selector: "div.product-tuple-listing"
+brand_affinity: []
+request_delay_ms: [800, 1600]
+
+selectors:
+  search_results_container: "div.product-tuple-listing"
+  title:
+    primary: "p.product-title"
+    fallback: "div[class*='product-desc'] p"
+  price:
+    primary: "span.product-price"
+    fallback: "div[class*='price'] span"
+  original_price:
+    primary: "span.product-desc-price.strike"
+    fallback: "span.strike"
+  rating:
+    primary: "div.filled-stars"
+    fallback: "span[class*='star']"
+  review_count:
+    primary: "p.product-rating-count"
+    fallback: null
+  listing_url:
+    primary: "a.dp-widget-link"
+    fallback: "a[href*='/product/']"
+  delivery:
+    primary: null
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Access Denied"
+  - "unusual traffic"
+  - "captcha"

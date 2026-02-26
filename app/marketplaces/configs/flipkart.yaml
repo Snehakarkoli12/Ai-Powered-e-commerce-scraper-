@@ -1,0 +1,46 @@
+key: flipkart
+name: Flipkart
+enabled: true
+base_url: https://www.flipkart.com
+search_url_pattern: "https://www.flipkart.com/search?q={query}&otracker=search&marketplace=FLIPKART&sort=relevance"
+trust_score_base: 0.88
+max_results: 5
+wait_strategy: "domcontentloaded"
+needs_scroll: true
+ready_selector: null
+brand_affinity: []
+request_delay_ms: [1500, 2500]
+
+selectors:
+  search_results_container: "div[data-id]"
+  title:
+    primary: "div[class*='KzDlHZ']"
+    fallback: "a[class*='wjcEIp']"
+  price:
+    primary: "div[class*='Nx9bqj']"
+    fallback: "div[class*='_30jeq3']"
+  original_price:
+    primary: "div[class*='yRaY8j']"
+    fallback: "div[class*='_3I9_wc']"
+  rating:
+    primary: "div[class*='XQDdHH']"
+    fallback: "div[class*='_3LWZlK']"
+  review_count:
+    primary: "span[class*='Wphh3N']"
+    fallback: "span[class*='_2_R_DZ']"
+  listing_url:
+    primary: "a[href*='/p/']"
+    fallback: "a[class*='CGtC98']"
+  delivery:
+    primary: "div[class*='yiggsN']"
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Please solve this puzzle"
+  - "unusual traffic"
+  - "Oops! Something went wrong"
+  - "please complete the security check"
+  - "Access Denied"

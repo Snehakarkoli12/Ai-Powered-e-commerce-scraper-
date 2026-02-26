@@ -1,0 +1,46 @@
+key: reliance_digital
+name: Reliance Digital
+enabled: true
+base_url: https://www.reliancedigital.in
+search_url_pattern: "https://www.reliancedigital.in/search?q={query}&pageSize=24"
+trust_score_base: 0.80
+max_results: 5
+# Changed from networkidle to domcontentloaded — networkidle caused 25s timeout
+wait_strategy: "domcontentloaded"
+needs_scroll: true
+ready_selector: null
+brand_affinity: []
+request_delay_ms: [1500, 2500]
+
+selectors:
+  search_results_container: "div[class*='Grid__Cell']"
+  title:
+    primary: "p[class*='product__title']"
+    fallback: "span[class*='name']"
+  price:
+    primary: "span[class*='product__offer-price']"
+    fallback: "span[class*='price']"
+  original_price:
+    primary: "span[class*='product__market-price']"
+    fallback: null
+  rating:
+    primary: "span[class*='rating']"
+    fallback: null
+  review_count:
+    primary: "span[class*='count']"
+    fallback: null
+  listing_url:
+    primary: "a[href*='/p/']"
+    fallback: "a[class*='product']"
+  delivery:
+    primary: "span[class*='delivery']"
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Access Denied"
+  - "Verify you are human"
+  - "unusual traffic"
+  - "cf-browser-verification"

@@ -1,0 +1,45 @@
+key: meesho
+name: Meesho
+enabled: true
+base_url: https://www.meesho.com
+search_url_pattern: "https://www.meesho.com/search?q={query}"
+trust_score_base: 0.60
+max_results: 5
+wait_strategy: "networkidle"
+needs_scroll: true
+ready_selector: "div[class*='ProductCard']"
+brand_affinity: []
+request_delay_ms: [1000, 2000]
+
+selectors:
+  search_results_container: "div[class*='ProductCard__container']"
+  title:
+    primary: "p[class*='ProductCard__Title']"
+    fallback: "p[class*='title']"
+  price:
+    primary: "h5[class*='ProductCard__Price']"
+    fallback: "span[class*='price']"
+  original_price:
+    primary: "p[class*='ProductCard__OriginalPrice']"
+    fallback: "s"
+  rating:
+    primary: "span[class*='rating']"
+    fallback: null
+  review_count:
+    primary: "span[class*='count']"
+    fallback: null
+  listing_url:
+    primary: "a[href*='/product']"
+    fallback: "a"
+  delivery:
+    primary: null
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Access Denied"
+  - "cf-browser-verification"
+  - "unusual traffic"
+  - "Enable JavaScript"

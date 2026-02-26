@@ -1,0 +1,45 @@
+key: samsung_shop
+name: Samsung Shop India
+enabled: true
+base_url: https://www.samsung.com/in
+search_url_pattern: "https://www.samsung.com/in/search/?searchvalue={query}"
+trust_score_base: 0.85
+max_results: 3
+wait_strategy: "networkidle"
+needs_scroll: true
+ready_selector: "div[class*='card']"
+# Only shown for Samsung brand queries
+brand_affinity:
+  - samsung
+request_delay_ms: [700, 1200]
+
+selectors:
+  search_results_container: "div[class*='card21--product']"
+  title:
+    primary: "p[class*='card21-title']"
+    fallback: "strong[class*='card21']"
+  price:
+    primary: "div[class*='price'] strong"
+    fallback: "span[class*='price']"
+  original_price:
+    primary: null
+    fallback: null
+  rating:
+    primary: null
+    fallback: null
+  review_count:
+    primary: null
+    fallback: null
+  listing_url:
+    primary: "a[href*='/buy/']"
+    fallback: "a[class*='card21']"
+  delivery:
+    primary: null
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Access Denied"
+  - "unusual traffic"

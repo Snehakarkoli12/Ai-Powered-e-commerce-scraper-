@@ -1,0 +1,47 @@
+key: amazon
+name: Amazon India
+enabled: true
+base_url: https://www.amazon.in
+# Sorted by avg_review to avoid "iPhone Air" appearing first
+search_url_pattern: "https://www.amazon.in/s?k={query}&i=electronics&s=review-rank"
+trust_score_base: 0.92
+max_results: 8
+wait_strategy: "domcontentloaded"
+needs_scroll: true
+ready_selector: "[data-component-type='s-search-result']"
+brand_affinity: []
+request_delay_ms: [1000, 2000]
+
+selectors:
+  search_results_container: "[data-component-type='s-search-result']"
+  title:
+    primary: "h2 .a-text-normal"
+    fallback: "h2 a span"
+  price:
+    primary: ".a-price .a-offscreen"
+    fallback: ".a-price-whole"
+  original_price:
+    primary: ".a-text-price .a-offscreen"
+    fallback: ".a-text-price span"
+  rating:
+    primary: ".a-icon-star-small .a-icon-alt"
+    fallback: "[aria-label*='out of 5 stars']"
+  review_count:
+    primary: ".a-size-base.s-underline-text"
+    fallback: "[aria-label*='ratings']"
+  listing_url:
+    primary: "h2 a"
+    fallback: "a.a-link-normal[href*='/dp/']"
+  delivery:
+    primary: "[data-cy='delivery-recipe-content'] .a-text-bold"
+    fallback: ".a-color-base.a-text-bold"
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Enter the characters you see below"
+  - "Sorry, we just need to make sure"
+  - "Type the characters you see in this image"
+  - "unusual traffic"
+  - "robot"

@@ -1,0 +1,43 @@
+key: paytm_mall
+name: Paytm Mall
+enabled: false
+base_url: https://paytmmall.com
+search_url_pattern: "https://paytmmall.com/search?q={query}"
+trust_score_base: 0.65
+max_results: 5
+wait_strategy: "networkidle"
+needs_scroll: true
+ready_selector: null
+brand_affinity: []
+request_delay_ms: [800, 1600]
+
+selectors:
+  search_results_container: "div[class*='product-card']"
+  title:
+    primary: "p[class*='title']"
+    fallback: null
+  price:
+    primary: "span[class*='price']"
+    fallback: null
+  original_price:
+    primary: null
+    fallback: null
+  rating:
+    primary: null
+    fallback: null
+  review_count:
+    primary: null
+    fallback: null
+  listing_url:
+    primary: "a[href*='/p/']"
+    fallback: null
+  delivery:
+    primary: null
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Access Denied"
+  - "unusual traffic"

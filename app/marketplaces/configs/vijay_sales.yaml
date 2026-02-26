@@ -1,0 +1,43 @@
+key: vijay_sales
+name: Vijay Sales
+enabled: true
+base_url: https://www.vijaysales.com
+search_url_pattern: "https://www.vijaysales.com/search/{query}"
+trust_score_base: 0.74
+max_results: 5
+wait_strategy: "domcontentloaded"
+needs_scroll: true
+ready_selector: null
+brand_affinity: []
+request_delay_ms: [800, 1500]
+
+selectors:
+  search_results_container: "div[class*='product']"
+  title:
+    primary: "div[class*='productName']"
+    fallback: "p[class*='productName']"
+  price:
+    primary: "div[class*='selling-price']"
+    fallback: "p[class*='selling']"
+  original_price:
+    primary: "span[class*='mrp']"
+    fallback: "p[class*='mrp']"
+  rating:
+    primary: "div[class*='rating'] span"
+    fallback: null
+  review_count:
+    primary: "span[class*='count']"
+    fallback: null
+  listing_url:
+    primary: "a[href*='/product']"
+    fallback: "a[href*='/buy']"
+  delivery:
+    primary: null
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Access Denied"
+  - "unusual traffic"

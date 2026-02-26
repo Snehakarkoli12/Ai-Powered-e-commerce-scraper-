@@ -1,0 +1,49 @@
+key: croma
+name: Croma
+enabled: true
+base_url: https://www.croma.com
+search_url_pattern: "https://www.croma.com/search/?q={query}&searchclick=true"
+trust_score_base: 0.82
+max_results: 5
+wait_strategy: "domcontentloaded"
+needs_scroll: true
+ready_selector: null
+brand_affinity: []
+request_delay_ms: [1500, 2500]
+
+selectors:
+  search_results_container: "li[class*='product-item']"
+  title:
+    primary: "h3[class*='product-title'] a"
+    fallback: "a[class*='product-title']"
+  price:
+    primary: "span[class*='amount']"
+    fallback: "span[class*='price']"
+  original_price:
+    primary: "span[class*='old-price']"
+    fallback: "del"
+  rating:
+    primary: "span[class*='rating__count']"
+    fallback: null
+  review_count:
+    primary: "span[class*='review-count']"
+    fallback: null
+  listing_url:
+    primary: "a[href*='/p/']"
+    fallback: "h3 a"
+  delivery:
+    primary: "div[class*='delivery']"
+    fallback: null
+  shipping:
+    primary: null
+    fallback: null
+
+bot_detection_phrases:
+  - "Access Denied"
+  - "unusual traffic"
+  - "captcha"
+  - "cf-browser-verification"
+  - "Checking your browser"
+  - "DDoS protection"
+  - "Ray ID"
+  - "Just a moment"

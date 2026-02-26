@@ -1,0 +1,104 @@
+# ── Environment & Secrets ─────────────────────────────────────
+.env
+
+# ── Python Cache & Bytecode ───────────────────────────────────
+__pycache__/
+
+# ── Virtual Environments ──────────────────────────────────────
+.venv/
+
+# ── Python Build & Distribution ───────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+sdist/
+*.whl
+MANIFEST
+
+# ── Testing & Coverage ────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.coveragerc
+.tox/
+.nox/
+
+# ── Type Checking & Linting ───────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pylint.d/
+pyrightconfig.json
+
+# ── Jupyter Notebooks ─────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Playwright / Scraping Debug ───────────────────────────────
+app/scraping/debug/
+playwright-report/
+test-results/
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+logs/
+*.log.*
+
+# ── Node / Frontend ───────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+.npm/
+.pnp
+.pnp.js
+.yarn/
+
+# ── OS Files ──────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ── IDEs & Editors ────────────────────────────────────────────
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*.swo
+*~
+
+# ── Database & Storage ────────────────────────────────────────
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# ── Temporary Files ───────────────────────────────────────────
+tmp/
+temp/
+.temp/
+*.tmp
+*.bak
+*.backup
+*.orig
+
+# ── Package Manager Locks (optional — remove if you want to commit) ──
+# poetry.lock
+# Pipfile.lock
