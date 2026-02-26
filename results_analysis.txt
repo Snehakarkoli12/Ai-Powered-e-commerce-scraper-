@@ -1,0 +1,18 @@
+=== test_amazon.json ===
+Time: 12.272s
+Counts: {'raw_listings': 0, 'normalized_offers': 0, 'matched_offers': 0, 'ranked_offers': 0}
+Errors: ["0 listings from 1 sites. Failures: [('amazon', 'Token limit exceeded on Amazon India')]", 'Extractor: no raw listings to process']
+  Site: amazon | status=error | msg=Token limit exceeded on Amazon India
+Raw: 0
+Final: 0
+Explanation: 
+
+=== test_result.json ===
+Time: 10.309s
+Counts: {'raw_listings': 0, 'normalized_offers': 0, 'matched_offers': 0, 'ranked_offers': 0}
+Errors: ["0 listings from 1 sites. Failures: [('vijay_sales', 'Token limit exceeded on Vijay Sales')]", 'Extractor: no raw listings to process']
+  Site: vijay_sales | status=error | msg=Token limit exceeded on Vijay Sales
+Raw: 0
+Final: 0
+Explanation: 
+

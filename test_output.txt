@@ -1,0 +1,18 @@
+Testing: POST /api/debug/compare with site=vijay_sales
+Query: JBL Tune 770NC Wireless Headphones
+------------------------------------------------------------
+Status: 200
+Query time: 10.309s
+Product: {'attributes': {'brand': 'Jbl', 'model': 'Tune 770NC Wireless', 'storage': None, 'ram': None, 'color': None, 'variant': None, 'category': 'audio', 'raw_query': 'JBL Tune 770NC Wireless Headphones', 'image_url': None, 'extras': {}, 'variant_tokens': [], 'target_keywords': []}, 'search_query': 'JBL Tune 770NC Wireless', 'source_url': None, 'source_marketplace': None}
+Counts: {'raw_listings': 0, 'normalized_offers': 0, 'matched_offers': 0, 'ranked_offers': 0}
+Errors: ["0 listings from 1 sites. Failures: [('vijay_sales', 'Token limit exceeded on Vijay Sales')]", 'Extractor: no raw listings to process']
+
+  [vijay_sales] error ù Token limit exceeded on Vijay Sales
+
+Raw listings: 0
+
+Final offers: 0
+
+Explanation: 
+
+Full result saved to test_result.json

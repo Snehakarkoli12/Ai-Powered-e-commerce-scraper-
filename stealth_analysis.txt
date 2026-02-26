@@ -1,0 +1,17 @@
+=== test_stealth.json ===
+Time: 21.968s
+Counts: {'raw_listings': 5, 'normalized_offers': 5, 'matched_offers': 5, 'ranked_offers': 5}
+Errors: []
+
+  Site: amazon | error | Token limit on Amazon India
+  Site: flipkart | ok | 5 listings (5 with price)
+
+Raw listings: 5
+  [0] Samsung Galaxy S24 5G Snapdragon (Cobalt Violet, 128 GB)
+Traceback (most recent call last):
+  File "C:\Users\siddh\Ai-Powered-e-commerce-scraper-\analyze_stealth.py", line 22, in <module>
+    print(f"       price={r.get('price_text')}")
+  File "C:\Users\siddh\AppData\Local\Programs\Python\Python311\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u20b9' in position 13: character maps to <undefined>

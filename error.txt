@@ -1,0 +1,37 @@
+22:15:48 | INFO    | app.marketplaces.registry | Registry: 11 marketplaces loaded
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\siddh\AppData\Local\Programs\Python\Python311\Lib\logging\__init__.py", line 1113, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\siddh\AppData\Local\Programs\Python\Python311\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 44: character maps to <undefined>
+Call stack:
+  File "<string>", line 1, in <module>
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\siddh\Ai-Powered-e-commerce-scraper-\app\main.py", line 15, in <module>
+    from app.agents.llm_ranker import llm_generate_explanation
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\siddh\Ai-Powered-e-commerce-scraper-\app\agents\llm_ranker.py", line 5, in <module>
+    from app.utils.llm_client import llm_client
+  File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "C:\Users\siddh\Ai-Powered-e-commerce-scraper-\app\utils\llm_client.py", line 131, in <module>
+    llm_client = GroqLLMClient()
+  File "C:\Users\siddh\Ai-Powered-e-commerce-scraper-\app\utils\llm_client.py", line 27, in __init__
+    logger.info(f"\u2713 Groq LLM | primary={self.primary_model} | fast={self.fast_model}")
+Message: '\u2713 Groq LLM | primary=llama-3.3-70b-versatile | fast=llama-3.1-8b-instant'
+Arguments: ()
+Import OK

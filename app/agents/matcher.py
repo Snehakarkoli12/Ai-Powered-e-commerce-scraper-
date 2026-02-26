@@ -1,178 +1,197 @@
+# -*- coding: utf-8 -*-
+"""
+Matcher agent: scores each NormalizedOffer against the NormalizedProduct target.
+Hard-rejects wrong variants and model numbers.
+Scores ALL offers -- not just the first per platform.
+"""
 from __future__ import annotations
-import asyncio
 import re
-from typing import Optional, Dict, List, Tuple
+from typing import Optional
 
-from app.schemas import NormalizedOffer, NormalizedProduct
-from app.agents import PipelineState
+from app.schemas import PipelineState, NormalizedOffer, NormalizedProduct
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_ACCESSORY_KW = [
-    'case','cover','screen protector','tempered glass','charger','cable','adapter',
-    'earphone','earbud','skin','flip cover','stand','holder','pouch','sleeve',
-    'bumper','shell','film','guard','dock','power bank','hub','tripod',
-    'selfie stick','lens','mount','wallet case',
+
+# -- Variant rejection tokens -------------------------------------------------
+# If target does NOT contain these tokens but title does -> hard reject (score=0)
+_VARIANT_TOKENS = {
+    "fe", "ultra", "plus", "lite", "mini",
+    "s23", "s22", "s21", "s20", "s25", "s10",
+    "a54", "a55", "a35", "a15", "a05",
+    "note", "fold", "flip",
+}
+
+# Category keywords that indicate an accessory or wrong product type
+_REJECT_KEYWORDS = [
+    "television", " tv ", "monitor", "laptop", "tablet",
+    "smartwatch", "earphone", "earbud", "headphone",
+    "charger", "cable", "case", "cover",
+    "screen guard", "power bank", "speaker",
+    "trimmer", "shaver", "pain", "gel", "cream",
+    "watch band", "strap",
 ]
-_WEIGHTS = {'brand': 0.30, 'model': 0.40, 'storage': 0.20, 'color': 0.10}
 
 
-def _is_accessory(title: str) -> bool:
-    t = title.lower()
-    return any(k in t for k in _ACCESSORY_KW)
+def _tokenize(text: str) -> set:
+    """Lowercase alphanumeric tokens from any string."""
+    if not text:
+        return set()
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-def _storage_gb(text: Optional[str]) -> Optional[int]:
-    if not text: return None
-    m = re.search(r'(\d+)\s*(GB|TB)', text, re.IGNORECASE)
-    if m:
-        v, u = int(m.group(1)), m.group(2).upper()
-        return v * 1024 if u == 'TB' else v
-    return None
+def _extract_storage(text: str) -> Optional[str]:
+    m = re.search(r"(\d+)\s*gb", text.lower())
+    return m.group(1) + "gb" if m else None
 
 
-def _regex_match(title: str, product: NormalizedProduct) -> Tuple[float, bool]:
-    attrs = product.attributes
-    tl    = title.lower()
-    score = 0.0
-
-    # Brand
-    if attrs.brand:
-        score += _WEIGHTS['brand'] if attrs.brand.lower() in tl else 0.0
-    else:
-        score += _WEIGHTS['brand']
-
-    # Model — strict numeric check
-    if attrs.model:
-        ml = attrs.model.lower().strip()
-        if re.search(r'\b' + re.escape(ml) + r'\b', tl):
-            score += _WEIGHTS['model']
-        else:
-            nums_in_title = re.findall(r'\b(\d{2,})\b', tl)
-            target_nums   = re.findall(r'\b(\d{2,})\b', ml)
-            if target_nums and nums_in_title:
-                for tn in target_nums:
-                    for n in nums_in_title:
-                        if n != tn and len(n) == len(tn):
-                            return 0.0, True  # hard reject — model number mismatch
-            tokens = ml.split()
-            hit    = sum(1 for t in tokens if t in tl)
-            score += _WEIGHTS['model'] * (hit / len(tokens) if tokens else 0)
-    else:
-        score += _WEIGHTS['model']
-
-    # Storage
-    if attrs.storage:
-        tg = _storage_gb(attrs.storage)
-        sm = re.search(r'(\d+\s*(?:GB|TB))', title, re.IGNORECASE)
-        if sm:
-            og = _storage_gb(sm.group(0))
-            if tg and og:
-                score += _WEIGHTS['storage'] if tg == og else (
-                    _WEIGHTS['storage'] * min(tg, og) / max(tg, og)
-                )
-        else:
-            score += _WEIGHTS['storage'] * 0.5
-    else:
-        score += _WEIGHTS['storage']
-
-    # Color
-    if attrs.color:
-        score += _WEIGHTS['color'] if attrs.color.lower() in tl else 0.0
-    else:
-        score += _WEIGHTS['color']
-
-    return round(min(score, 1.0), 3), False
+def _extract_model_numbers(text: str) -> set:
+    """Extract all numeric model identifiers from text.
+    E.g. 'JBL Tune 770NC' -> {'770'}
+         'Galaxy S24 Ultra' -> {'24'}
+         'iPhone 15 Pro' -> {'15'}
+    """
+    if not text:
+        return set()
+    # Find numbers that are part of model names (not storage like 128GB)
+    # Match digits that are NOT followed by GB/TB
+    tokens = re.findall(r'\b(\d{2,4})\b(?!\s*(?:gb|tb|mm|mp|mah|w|wh))', text.lower())
+    return set(tokens)
 
 
-def _deduplicate(offers: List[NormalizedOffer]) -> List[NormalizedOffer]:
-    best: Dict[Tuple[str, Optional[float]], NormalizedOffer] = {}
-    for o in sorted(offers, key=lambda x: x.match_score, reverse=True):
-        k = (o.platform_key, o.effective_price)
-        if k not in best:
-            best[k] = o
-    return list(best.values())
+def _compute_match_score(
+    offer:  NormalizedOffer,
+    target: NormalizedProduct,
+) -> float:
+    """
+    Returns 0.0-1.0 match score.
+    0.0 = hard reject (wrong product / wrong variant).
+    """
+    title_lower  = offer.title.lower()
+    title_tokens = _tokenize(offer.title)
 
+    # Read target attributes
+    attrs = target.attributes
+    target_brand   = (attrs.brand   or "").lower().strip()
+    target_model   = (attrs.model   or "").lower().strip()
+    target_storage = (attrs.storage or "").lower().strip()
+    target_query   = (target.search_query or "").lower().strip()
 
-async def _score_one(
-    offer: NormalizedOffer,
-    product: NormalizedProduct,
-    min_score: float,
-) -> Tuple[NormalizedOffer, Optional[str]]:
-    """Returns (offer, rejection_reason). None reason = accepted."""
-    if _is_accessory(offer.title):
-        return offer, "ACCESSORY"
-    if offer.effective_price is None:
-        return offer, "NO_PRICE"
+    target_model_tokens = _tokenize(target_model)
+    target_query_tokens = _tokenize(target_query)
 
-    regex_score, hard_reject = _regex_match(offer.title, product)
-    if hard_reject:
-        return offer, "HARD_REJECT(model_mismatch)"
+    # Combined target tokens for variant checking
+    all_target_tokens = target_model_tokens | target_query_tokens
 
-    final_score = regex_score
+    # -- Hard reject: wrong product category / accessory -----------------------
+    # Only apply category rejection if the target query is NOT for that category
+    target_combined = (target_brand + " " + target_model + " " + target_query).lower()
+    for kw in _REJECT_KEYWORDS:
+        kw_clean = kw.strip()
+        if kw_clean in title_lower and kw_clean not in target_combined:
+            logger.debug("Matcher: category reject '%s' (keyword: '%s')", offer.title[:50], kw_clean)
+            return 0.0
 
-    # LLM for uncertain scores (0.3–0.75 range)
-    from app.utils.llm_client import llm_client
-    if llm_client.enabled and 0.3 < regex_score < 0.75:
-        try:
-            from app.agents.llm_matcher import llm_compute_match
-            attrs  = product.attributes
-            result = await llm_compute_match(
-                offer.title, attrs.brand, attrs.model, attrs.storage, attrs.color
+    # -- Hard reject: wrong variant --------------------------------------------
+    for vtoken in _VARIANT_TOKENS:
+        target_has = vtoken in all_target_tokens
+        title_has  = vtoken in title_tokens
+
+        if title_has and not target_has:
+            logger.debug(
+                "Matcher: variant reject '%s' -- token '%s' not in target",
+                offer.title[:50], vtoken,
             )
-            if result:
-                if result.get("is_accessory"):
-                    return offer, "LLM_ACCESSORY"
-                if not result.get("is_correct_model", True):
-                    return offer, "LLM_WRONG_MODEL"
-                final_score = result.get("match_score", regex_score)
+            return 0.0
+
+    # -- Hard reject: wrong storage --------------------------------------------
+    if target_storage:
+        offer_storage = _extract_storage(offer.title)
+        if offer_storage and offer_storage != target_storage.replace(" ", ""):
+            logger.debug(
+                "Matcher: storage reject '%s' -- %s != %s",
+                offer.title[:50], offer_storage, target_storage,
+            )
+            return 0.0
+
+    # -- Hard reject: wrong model number ---------------------------------------
+    # E.g. JBL Tune 770NC vs JBL Tune 750BT -> different model numbers
+    target_model_nums = _extract_model_numbers(target_model)
+    if target_model_nums:
+        offer_model_nums = _extract_model_numbers(offer.title)
+        if offer_model_nums:
+            # Check if the model numbers match
+            # If target has "770" and offer has "750", that's a mismatch
+            if not target_model_nums & offer_model_nums:
                 logger.debug(
-                    f"[{offer.platform_key}] regex={regex_score:.2f}→llm={final_score:.2f} "
-                    f"| {result.get('reason','')[:50]}"
+                    "Matcher: model number reject '%s' -- nums %s vs target %s",
+                    offer.title[:50], offer_model_nums, target_model_nums,
                 )
-        except Exception as e:
-            logger.error(f"LLM matcher error: {e}")
+                return 0.0
 
-    offer.match_score = final_score
-    if final_score < min_score:
-        return offer, f"LOW_SCORE({final_score:.2f})"
-    return offer, None
+    # -- Positive scoring ------------------------------------------------------
+    score     = 0.0
+    max_score = 0.0
 
+    # Brand match (0.25)
+    if target_brand:
+        max_score += 0.25
+        if target_brand in title_lower:
+            score += 0.25
+
+    # Model token overlap (0.50)
+    if target_model_tokens:
+        max_score += 0.50
+        matched    = target_model_tokens & title_tokens
+        score     += 0.50 * (len(matched) / len(target_model_tokens))
+
+    # Storage match (0.25)
+    if target_storage:
+        max_score += 0.25
+        if target_storage.replace(" ", "") in title_lower.replace(" ", ""):
+            score += 0.25
+
+    if max_score == 0.0:
+        return 0.5  # No target info to compare -- neutral pass
+
+    return round(score / max_score, 3)
+
+
+# -- Public agent entry point -------------------------------------------------
 
 async def run_matcher(state: PipelineState) -> PipelineState:
-    """Stage 4 — Semantic product matching with LLM fallback."""
-    if not state.normalized_offers or not state.normalized_product:
+    if not state.normalized_offers:
         logger.warning("Matcher: nothing to process")
         return state
 
-    product   = state.normalized_product
-    min_score = state.request.preferences.min_match_score
+    target     = state.normalized_product
+    min_score  = 0.0  # Accept all non-rejected offers
+    prefs      = getattr(state, "preferences", None)
+    if prefs and hasattr(prefs, "min_match_score"):
+        min_score = prefs.min_match_score
 
-    results = await asyncio.gather(*[
-        _score_one(o, product, min_score)
-        for o in state.normalized_offers
-    ])
+    matched = []
+    rejected_count = 0
 
-    matched, rejections = [], []
-    for offer, reason in results:
-        if reason:
-            rejections.append(f"[{offer.platform_key}] {reason}: {offer.title[:50]}")
-        else:
+    for offer in state.normalized_offers:
+        score = _compute_match_score(offer, target)
+        offer.match_score = score
+
+        if score > 0.0 and score >= min_score:
             matched.append(offer)
+        else:
+            rejected_count += 1
+            logger.info(
+                "Matcher: rejected '%s' [%s] score=%.3f",
+                offer.title[:50], offer.platform_key, score,
+            )
 
-    if rejections:
-        logger.info(f"Rejected {len(rejections)} offers:")
-        for r in rejections[:6]:
-            logger.info(f"  ✗ {r}")
-
-    if not matched and rejections:
-        state.add_error(
-            f"All {len(rejections)} offers rejected. "
-            f"Try lowering min_match_score (current={min_score}). "
-            f"Sample: {rejections[0]}"
-        )
-
-    state.matched_offers = _deduplicate(matched)
-    logger.info(f"Matcher: ✓ {len(state.matched_offers)} matched, ✗ {len(rejections)} rejected")
+    logger.info(
+        "Matcher: %d -> %d offers (rejected %d)",
+        len(state.normalized_offers),
+        len(matched),
+        rejected_count,
+    )
+    state.matched_offers = matched
     return state

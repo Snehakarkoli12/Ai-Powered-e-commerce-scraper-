@@ -1,0 +1,17 @@
+23:10:42 | INFO    | app.marketplaces.registry | Registry: 11 marketplaces loaded
+Traceback (most recent call last):
+  File "C:\Users\siddh\Ai-Powered-e-commerce-scraper-\diagnose.py", line 93, in <module>
+    asyncio.run(diagnose())
+  File "C:\Users\siddh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\siddh\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\siddh\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\siddh\Ai-Powered-e-commerce-scraper-\diagnose.py", line 17, in diagnose
+    configs = marketplace_registry.get_all_enabled()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MarketplaceRegistry' object has no attribute 'get_all_enabled'. Did you mean: 'all_enabled'?

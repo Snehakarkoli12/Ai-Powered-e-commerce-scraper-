@@ -1,0 +1,48 @@
+{
+  "query_time_seconds": 12.272,
+  "normalized_product": {
+    "attributes": {
+      "brand": "Samsung",
+      "model": "Galaxy S24",
+      "storage": "128GB",
+      "ram": null,
+      "color": null,
+      "variant": null,
+      "category": "smartphone",
+      "raw_query": "Samsung Galaxy S24 128GB",
+      "image_url": null,
+      "extras": {},
+      "variant_tokens": [],
+      "target_keywords": []
+    },
+    "search_query": "Samsung Galaxy S24 128GB",
+    "source_url": null,
+    "source_marketplace": null
+  },
+  "selected_marketplaces": [
+    "amazon"
+  ],
+  "counts": {
+    "raw_listings": 0,
+    "normalized_offers": 0,
+    "matched_offers": 0,
+    "ranked_offers": 0
+  },
+  "raw_listings": [],
+  "normalized_before_match": [],
+  "final_offers": [],
+  "site_statuses": [
+    {
+      "marketplace_key": "amazon",
+      "marketplace_name": "Amazon India",
+      "status": "error",
+      "message": "Token limit exceeded on Amazon India",
+      "listings_found": 0
+    }
+  ],
+  "errors": [
+    "0 listings from 1 sites. Failures: [('amazon', 'Token limit exceeded on Amazon India')]",
+    "Extractor: no raw listings to process"
+  ],
+  "explanation": ""
+}

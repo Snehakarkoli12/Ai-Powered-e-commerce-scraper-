@@ -1,0 +1,39 @@
+FULL TEST: Samsung Galaxy S24 128GB (ALL sites)
+============================================================
+TIME: 156.565s
+RAW: 23 | NORMALIZED: 15 | MATCHED: 9 | FINAL: 0
+
+SITE STATUSES:
+  [ERR] amazon               | 0 listings | Token limit on Amazon India
+  [OK] croma                | 5 listings | 5 listings (5 with price)
+  [OK] flipkart             | 5 listings | 5 listings (5 with price)
+  [NIL] jiomart              | 0 listings | LLM found 0 products on JioMart
+  [ERR] meesho               | 0 listings | Token limit on Meesho
+  [OK] reliance_digital     | 5 listings | 5 listings (4 with price)
+  [OK] samsung_shop         | 3 listings | 3 listings (3 with price)
+  [OK] snapdeal             | 5 listings | 5 listings (5 with price)
+  [ERR] vijay_sales          | 0 listings | Token limit on Vijay Sales
+
+FINAL OFFERS:
+  #1 [flipkart] Samsung Galaxy S24 5G Snapdragon (Cobalt Violet, 128 GB
+     price=Rs.49,999 | match=1.00 | final=0.776 | badges=['Recommended', 'Best Price', 'Most Trusted']
+  #2 [flipkart] Samsung Galaxy S24 5G Snapdragon (Onyx Black, 128 GB)
+     price=Rs.49,999 | match=1.00 | final=0.776 | badges=[]
+  #3 [flipkart] Samsung Galaxy S24 5G Snapdragon (Amber Yellow, 128 GB)
+     price=Rs.49,999 | match=1.00 | final=0.776 | badges=[]
+  #4 [flipkart] Samsung Galaxy S24 5G Snapdragon (Marble Gray, 128 GB)
+     price=Rs.49,999 | match=1.00 | final=0.776 | badges=[]
+  #5 [flipkart] Samsung Galaxy S24 Exynos 5G (Amber Yellow, 128 GB)
+     price=Rs.49,999 | match=1.00 | final=0.746 | badges=[]
+  #6 [samsung_shop] Galaxy S24 Marble Gray 128GB
+     price=Rs.59,999 | match=0.75 | final=0.688 | badges=[]
+  #7 [samsung_shop] Galaxy S24 Amber Yellow 128GB
+     price=Rs.55,999 | match=0.75 | final=0.633 | badges=[]
+  #8 [reliance_digital] Samsung Galaxy S24 128GB
+     price=null | match=1.00 | final=0.470 | badges=[]
+  #9 [croma] Samsung Galaxy S24 128GB
+     price=Rs.129,999 | match=1.00 | final=0.270 | badges=[]
+
+AI RECOMMENDATION: I recommend Flipkart at Rs.49,999 for the Samsung Galaxy S24 128GB, as it's the best balance of price and trust. You won't find a better deal elsewhere, with no price gap. Note that delivery speed may vary, but Flipkart's 4.6/5 rating ensures a reliable purchase.
+
+Full JSON saved to test_full.json

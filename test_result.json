@@ -1,0 +1,48 @@
+{
+  "query_time_seconds": 10.309,
+  "normalized_product": {
+    "attributes": {
+      "brand": "Jbl",
+      "model": "Tune 770NC Wireless",
+      "storage": null,
+      "ram": null,
+      "color": null,
+      "variant": null,
+      "category": "audio",
+      "raw_query": "JBL Tune 770NC Wireless Headphones",
+      "image_url": null,
+      "extras": {},
+      "variant_tokens": [],
+      "target_keywords": []
+    },
+    "search_query": "JBL Tune 770NC Wireless",
+    "source_url": null,
+    "source_marketplace": null
+  },
+  "selected_marketplaces": [
+    "vijay_sales"
+  ],
+  "counts": {
+    "raw_listings": 0,
+    "normalized_offers": 0,
+    "matched_offers": 0,
+    "ranked_offers": 0
+  },
+  "raw_listings": [],
+  "normalized_before_match": [],
+  "final_offers": [],
+  "site_statuses": [
+    {
+      "marketplace_key": "vijay_sales",
+      "marketplace_name": "Vijay Sales",
+      "status": "error",
+      "message": "Token limit exceeded on Vijay Sales",
+      "listings_found": 0
+    }
+  ],
+  "errors": [
+    "0 listings from 1 sites. Failures: [('vijay_sales', 'Token limit exceeded on Vijay Sales')]",
+    "Extractor: no raw listings to process"
+  ],
+  "explanation": ""
+}

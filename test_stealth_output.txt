@@ -1,0 +1,14 @@
+Testing: Samsung Galaxy S24 128GB
+Sites: ['amazon', 'flipkart']
+------------------------------------------------------------
+Status: 200
+Time: 21.968s
+Counts: {'raw_listings': 5, 'normalized_offers': 5, 'matched_offers': 5, 'ranked_offers': 5}
+Errors: []
+
+  [amazon] error - Token limit on Amazon India
+  [flipkart] ok - 5 listings (5 with price)
+
+Raw listings: 5
+  [0] Samsung Galaxy S24 5G Snapdragon (Cobalt Violet, 128 GB)
+ERROR: 'charmap' codec can't encode character '\u20b9' in position 13: character maps to <undefined>
