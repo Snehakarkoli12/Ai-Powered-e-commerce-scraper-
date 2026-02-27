@@ -23,6 +23,7 @@ from typing import List, Tuple, Optional, Dict
 from urllib.parse import quote_plus, urlparse
 
 from groq import Groq as _Groq
+from groq import APIConnectionError as _GroqConnectionError
 
 from app.schemas import RawListing, SiteStatus, SiteStatusCode
 from app.marketplaces.registry import marketplace_registry, MarketplaceConfig
@@ -160,7 +161,13 @@ _groq_client: Optional[_Groq] = None
 def _get_groq_client() -> _Groq:
     global _groq_client
     if _groq_client is None:
-        _groq_client = _Groq(api_key=settings.groq_api_key)
+        key = (settings.groq_api_key or "").strip()
+        if not key:
+            raise ValueError(
+                "GROQ_API_KEY is not set in .env — cannot call Groq LLM. "
+                "Get a free key at https://console.groq.com and add it to your .env file."
+            )
+        _groq_client = _Groq(api_key=key)
     return _groq_client
 
 
@@ -198,6 +205,18 @@ def _build_llm_input(page_text: str, word_budget: int) -> str:
     # Strip image markers (saves tokens)
     text = re.sub(r'\[IMG:[^\]]{0,500}\]', '', text)
 
+    # Truncate long URL markers — keep path part only, max 120 chars
+    def _shorten_url_marker(m: re.Match) -> str:
+        url = m.group(1)
+        try:
+            parsed = urlparse(url)
+            short = parsed.path[:100]  # keep path, truncate
+            return f"[URL:{short}]"
+        except Exception:
+            return url[:120]
+
+    text = re.sub(r'\[URL:([^\]]{0,2000})\]', _shorten_url_marker, text)
+
     # Remove noise
     for pattern in _NOISE_PATTERNS:
         text = re.sub(pattern, '\n', text)
@@ -206,8 +225,16 @@ def _build_llm_input(page_text: str, word_budget: int) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
 
+    # Word-level truncation
     words = text.split()
-    return ' '.join(words[:word_budget])
+    text = ' '.join(words[:word_budget])
+
+    # Character-level cap — Groq has request size limits (~6K tokens ≈ ~24K chars)
+    _MAX_CHARS = 8000
+    if len(text) > _MAX_CHARS:
+        text = text[:_MAX_CHARS]
+
+    return text
 
 
 # ── LLM prompt ──────────────────────────────────────────────────────────────
@@ -217,6 +244,9 @@ def _build_prompt(search_query: str, max_results: int) -> str:
         f"Extract up to {max_results} product listings for '{search_query}' "
         f"from this Indian e-commerce search results page.\n\n"
         f"CRITICAL RULES:\n"
+        f"- ONLY extract products that MATCH the search query '{search_query}'. "
+        f"Skip trending products, recommended products, sponsored ads for DIFFERENT items, "
+        f"and any product whose name does NOT contain the key words from '{search_query}'.\n"
         f"- price_text: The CURRENT SELLING PRICE shown on the page. "
         f"Indian prices use formats like: Rs 55,999 or Rs.1,29,999 or 55,999 or INR 55999. "
         f"Extract the EXACT price string as shown. This is the MOST IMPORTANT field.\n"
@@ -230,6 +260,9 @@ def _build_prompt(search_query: str, max_results: int) -> str:
         f"- image_url: null (not needed).\n"
         f"- seller_text: Seller name if shown. null if not shown.\n"
         f"- return_policy_text: null.\n\n"
+        f"RELEVANCE FILTER: A product is relevant ONLY if its title contains the brand "
+        f"and model from '{search_query}'. For example, if the query is 'Samsung Galaxy S24', "
+        f"do NOT extract 'OnePlus Nord', 'Xiaomi 14', or phone cases/covers.\n"
         f"Return REAL products only. Skip accessories, cases, cables unless the query asks for them.\n"
         f"Do NOT hallucinate or invent data. If a field is not visible, use null.\n"
         f"IMPORTANT: You MUST extract price_text for every product. If you see numbers like "
@@ -243,6 +276,10 @@ _SYSTEM_PROMPT = (
     "CRITICAL: Indian prices appear as: Rs 55,999 | Rs. 1,29,999 | INR 55999 | "
     "just bare numbers like 55999 near product names. "
     "Indian lakhs format: 1,29,999 means 129999 (one lakh twenty nine thousand).\n\n"
+    "RELEVANCE RULE: ONLY extract products whose title matches the search query. "
+    "Do NOT extract trending items, 'you might also like' suggestions, or products "
+    "from a different brand/model than what was searched. If the search is for "
+    "'Samsung Galaxy S24', only extract Samsung Galaxy S24 variants — NOT other phones.\n\n"
     "Return ONLY a valid JSON object with key 'products' containing an array. "
     "Each product: {title, price_text, original_price_text, rating_text, "
     "review_count_text, delivery_text, listing_url, image_url, seller_text, "
@@ -326,6 +363,21 @@ _EXTRACT_TEXT_JS = """
         document.querySelectorAll('[style*="display: none"], [style*="display:none"], [hidden]')
             .forEach(el => el.remove());
 
+        // Remove navigation / header / footer noise to save LLM tokens
+        ['nav', 'header', 'footer'].forEach(tag => {
+            document.querySelectorAll(tag).forEach(el => el.remove());
+        });
+        // Also remove common noise containers by role or class
+        document.querySelectorAll(
+            '[role="navigation"], [role="banner"], [role="contentinfo"], ' +
+            '[class*="navbar"], [class*="Navbar"], [class*="NavBar"], ' +
+            '[class*="header-menu"], [class*="HeaderMenu"], ' +
+            '[class*="footer"], [class*="Footer"], ' +
+            '[class*="sidebar"], [class*="SideBar"], [class*="Sidebar"], ' +
+            '[class*="mega-menu"], [class*="MegaMenu"], ' +
+            '[class*="cookie"], [class*="Cookie"]'
+        ).forEach(el => el.remove());
+
         // Inject URL markers next to links
         document.querySelectorAll('a[href]').forEach(a => {
             try {
@@ -346,15 +398,74 @@ _EXTRACT_TEXT_JS = """
 }
 """
 
+# Targeted extraction JS: extracts text only from product container area
+# Used when we have a ready_selector that matched — we know where products are
+_EXTRACT_PRODUCTS_JS = """
+(containerSelector) => {
+    try {
+        // Find ALL matching product containers
+        const containers = document.querySelectorAll(containerSelector);
+        if (!containers || containers.length === 0) return '';
 
-async def _fetch_html_playwright(url: str, site_key: str, attempt: int = 1) -> str:
+        // Collect text from all product containers, injecting URL markers
+        let texts = [];
+        containers.forEach(c => {
+            // Inject URL markers for links INSIDE the container
+            c.querySelectorAll('a[href]').forEach(a => {
+                try {
+                    const href = a.getAttribute('href') || '';
+                    if (href && href !== '#' && href.length > 3 &&
+                        !href.startsWith('javascript:') &&
+                        (href.startsWith('/') || href.startsWith('http'))) {
+                        a.appendChild(document.createTextNode(' [URL:' + href + '] '));
+                    }
+                } catch(e) {}
+            });
+
+            let t = c.innerText.trim();
+
+            // Check if container's parent/ancestor is an <a> with href
+            // (common pattern: link wraps the card, not inside it)
+            let parent = c.parentElement;
+            for (let i = 0; i < 3 && parent; i++) {
+                if (parent.tagName === 'A' && parent.href) {
+                    try {
+                        const href = parent.getAttribute('href') || '';
+                        if (href && href.length > 3 && !href.startsWith('javascript:')) {
+                            t += ' [URL:' + href + ']';
+                            break;
+                        }
+                    } catch(e) {}
+                }
+                parent = parent.parentElement;
+            }
+
+            if (t) texts.push(t);
+        });
+        return texts.join('\\n\\n');
+    } catch(e) {
+        return '';
+    }
+}
+"""
+
+
+async def _fetch_html_playwright(
+    url: str, site_key: str, attempt: int = 1,
+    ready_selector: Optional[str] = None,
+) -> Tuple[str, bool]:
     """
     Fetch page text using stealth Chromium.
     Uses anti-detection JS patches, random UA, realistic viewport.
+
+    Returns (page_text, ready_selector_matched).
+    ready_selector_matched is True when ready_selector was found on the page,
+    False if it timed out, or True when no ready_selector was provided.
     """
     from playwright.async_api import async_playwright
 
     html = ""
+    selector_matched = True  # assume OK if no selector configured
     ua = random.choice(_USER_AGENTS)
     wait_time = _SITE_WAIT.get(site_key, 3.5)
 
@@ -415,6 +526,24 @@ async def _fetch_html_playwright(url: str, site_key: str, attempt: int = 1) -> s
 
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
+            # Wait for search results to render (SPA sites like Croma/Reliance)
+            if ready_selector:
+                try:
+                    await page.wait_for_selector(
+                        ready_selector, state="attached", timeout=10000,
+                    )
+                    logger.info(
+                        "[%s] ready_selector '%s' found",
+                        site_key, ready_selector,
+                    )
+                    selector_matched = True
+                except Exception:
+                    logger.warning(
+                        "[%s] ready_selector '%s' not found within 10s — continuing",
+                        site_key, ready_selector,
+                    )
+                    selector_matched = False
+
             # Wait for JS hydration
             await asyncio.sleep(wait_time + random.uniform(0.5, 1.5))
 
@@ -429,8 +558,25 @@ async def _fetch_html_playwright(url: str, site_key: str, attempt: int = 1) -> s
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.2)")
             await asyncio.sleep(0.5)
 
-            # Extract text with URL markers
-            html = await page.evaluate(_EXTRACT_TEXT_JS)
+            # Extract text — prefer targeted extraction from product containers
+            if ready_selector and selector_matched:
+                # First try targeted: extract text only from product card elements
+                html = await page.evaluate(_EXTRACT_PRODUCTS_JS, ready_selector)
+                if html and len(html.strip()) > 100:
+                    logger.info(
+                        "[%s] Targeted extraction from '%s': %d chars",
+                        site_key, ready_selector, len(html),
+                    )
+                else:
+                    # Fall back to full-page extraction (with nav stripped)
+                    logger.info(
+                        "[%s] Targeted extraction too short (%d chars), falling back to full page",
+                        site_key, len(html or ""),
+                    )
+                    html = await page.evaluate(_EXTRACT_TEXT_JS)
+            else:
+                # No selector or not matched — use full-page extraction
+                html = await page.evaluate(_EXTRACT_TEXT_JS)
 
             logger.info("[%s] Fetched %d chars of page text", site_key, len(html))
 
@@ -439,7 +585,7 @@ async def _fetch_html_playwright(url: str, site_key: str, attempt: int = 1) -> s
     except Exception as e:
         logger.error("[%s] Playwright fetch error: %s", site_key, str(e)[:150])
 
-    return html
+    return html, selector_matched
 
 
 # ── URL / field cleaners ────────────────────────────────────────────────────
@@ -448,6 +594,21 @@ _FAKE_DOMAINS = {
     "example.com", "placeholder.com", "domain.com",
     "website.com", "url.com", "product.com", "test.com",
 }
+
+# ── Generic "no results" phrases (checked on ALL sites) ─────────────────────
+
+_GENERIC_NO_RESULTS_PHRASES = [
+    "sorry, no results found",
+    "no results found",
+    "no products found",
+    "didn't match any products",
+    "did not match any products",
+    "we couldn't find",
+    "could not find any results",
+    "0 results for",
+    "no items found",
+    "no matching results",
+]
 _NULL_VALS = {
     "none", "null", "n/a", "na", "", "not available",
     "not found", "not visible", "[url]", "[img]",
@@ -552,7 +713,10 @@ async def scrape_one_site(
     # Try up to 2 attempts (fresh browser context each time)
     for attempt in range(1, 3):
         try:
-            raw_text = await _fetch_html_playwright(url, config.key, attempt)
+            raw_text, selector_matched = await _fetch_html_playwright(
+                url, config.key, attempt,
+                ready_selector=config.ready_selector,
+            )
 
             if not raw_text or len(raw_text.strip()) < 100:
                 status.status  = SiteStatusCode.NO_RESULTS
@@ -579,6 +743,48 @@ async def scrape_one_site(
                 if attempt < 2:
                     await asyncio.sleep(random.uniform(3.0, 6.0))
                     continue
+                return [], status
+
+            # ── "No results" detection ──────────────────────────────────
+            # Combine config-specific phrases with generic ones
+            no_results_phrases = list(_GENERIC_NO_RESULTS_PHRASES)
+            if config.no_results_phrases:
+                no_results_phrases.extend(
+                    p.lower() for p in config.no_results_phrases
+                )
+
+            no_results_hit = None
+            for phrase in no_results_phrases:
+                if phrase in text_lower:
+                    no_results_hit = phrase
+                    break
+
+            # If explicit "no results" text is found on the page, skip LLM
+            if no_results_hit:
+                status.status  = SiteStatusCode.NO_RESULTS
+                status.message = (
+                    f"No results on {config.name} (page says: '{no_results_hit}')"
+                )
+                logger.info(
+                    "[%s] No-results phrase detected: '%s' — skipping LLM",
+                    config.key, no_results_hit,
+                )
+                return [], status
+
+            # If ready_selector was configured but timed out, the product
+            # grid never appeared.  The page text is likely default/trending
+            # items, NOT search results.  Return empty to avoid hallucinated
+            # matches.
+            if config.ready_selector and not selector_matched:
+                status.status  = SiteStatusCode.NO_RESULTS
+                status.message = (
+                    f"Product grid did not load on {config.name} "
+                    f"(ready_selector timed out)"
+                )
+                logger.info(
+                    "[%s] ready_selector timed out — treating as no results",
+                    config.key,
+                )
                 return [], status
 
             # Prepare LLM input
@@ -618,6 +824,25 @@ async def scrape_one_site(
                     await asyncio.sleep(random.uniform(2.0, 4.0))
                     continue
                 return [], status
+
+        except _GroqConnectionError as err:
+            # Empty or invalid API key → Groq SDK raises APIConnectionError
+            status.status  = SiteStatusCode.ERROR
+            status.message = (
+                "Groq API key missing or invalid — set GROQ_API_KEY in .env"
+            )
+            logger.error(
+                "[%s] Groq APIConnectionError (likely missing API key): %s",
+                config.key, str(err)[:120],
+            )
+            return [], status  # Don't retry — key won't fix itself
+
+        except ValueError as err:
+            # Raised by our own _get_groq_client validation
+            status.status  = SiteStatusCode.ERROR
+            status.message = str(err)[:120]
+            logger.error("[%s] %s", config.key, str(err)[:120])
+            return [], status
 
         except Exception as err:
             err_str   = str(err)
@@ -673,6 +898,26 @@ async def _scrape_with_semaphore(
         return await scrape_one_site(config, search_query, max_results)
 
 
+# ── Dedicated HTTP+BS4 scrapers (no Playwright needed) ───────────────────────
+
+_DEDICATED_SCRAPERS: Dict[str, object] = {}
+
+def _get_dedicated_scraper(site_key: str):
+    """Lazily instantiate dedicated scrapers so imports happen only once."""
+    if site_key not in _DEDICATED_SCRAPERS:
+        if site_key == "amazon":
+            from app.scraping.amazon import AmazonScraper
+            _DEDICATED_SCRAPERS[site_key] = AmazonScraper()
+        elif site_key == "vijay_sales":
+            from app.scraping.vijay_sales import VijaySalesScraper
+            _DEDICATED_SCRAPERS[site_key] = VijaySalesScraper()
+    return _DEDICATED_SCRAPERS.get(site_key)
+
+
+# Sites that have a dedicated HTTP+BS4 scraper (skip Playwright for these)
+_DEDICATED_SITE_KEYS = {"amazon", "vijay_sales"}
+
+
 async def run_sgai_orchestrator(
     search_query:         str,
     marketplace_keys:     List[str],
@@ -693,11 +938,24 @@ async def run_sgai_orchestrator(
         logger.error("No enabled configs for keys: %s", marketplace_keys)
         return [], []
 
-    # Run all sites in parallel (semaphore limits concurrent browsers to 3)
-    tasks = [
-        _scrape_with_semaphore(cfg, search_query, max_results_per_site)
-        for cfg in configs
-    ]
+    # Split into dedicated scrapers vs Playwright+LLM sites
+    tasks = []
+    for cfg in configs:
+        scraper = _get_dedicated_scraper(cfg.key)
+        if scraper is not None:
+            # Dedicated HTTP+BS4 scraper — runs in thread pool, no browser
+            logger.info("[%s] Using dedicated HTTP+BS4 scraper", cfg.key)
+            tasks.append(
+                scraper.async_scrape(
+                    search_query, max_results_per_site,
+                    cfg.key, cfg.name,
+                )
+            )
+        else:
+            # Default: Playwright+LLM path (semaphore-limited)
+            tasks.append(
+                _scrape_with_semaphore(cfg, search_query, max_results_per_site)
+            )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -725,3 +983,4 @@ async def run_sgai_orchestrator(
         len(all_listings), ok, len(all_statuses),
     )
     return all_listings, all_statuses
+

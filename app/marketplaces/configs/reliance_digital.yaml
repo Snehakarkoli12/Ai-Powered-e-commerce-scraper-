@@ -8,7 +8,7 @@ max_results: 5
 # Changed from networkidle to domcontentloaded — networkidle caused 25s timeout
 wait_strategy: "domcontentloaded"
 needs_scroll: true
-ready_selector: null
+ready_selector: "div[class*='Grid__Cell']"
 brand_affinity: []
 request_delay_ms: [1500, 2500]
 
@@ -38,6 +38,16 @@ selectors:
   shipping:
     primary: null
     fallback: null
+
+no_results_phrases:
+  - "Sorry, no results found"
+  - "No results found"
+  - "didn't match any products"
+  - "did not match any products"
+  - "couldn't find any results"
+  - "0 results for"
+  - "No products found"
+  - "Showing results for"
 
 bot_detection_phrases:
   - "Access Denied"

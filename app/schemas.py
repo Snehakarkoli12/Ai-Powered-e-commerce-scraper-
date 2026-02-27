@@ -42,7 +42,7 @@ class RankingPreferences(BaseModel):
         "balanced",
         description="cheapest | fastest | reliable | balanced",
     )
-    min_match_score: float = Field(0.5, ge=0.0, le=1.0)
+    min_match_score: float = Field(0.4, ge=0.0, le=1.0)
 
     def mode_enum(self) -> RankingMode:
         try:

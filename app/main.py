@@ -104,6 +104,17 @@ def _build_counts(state: PipelineState) -> dict:
 async def _run_pipeline(request: CompareRequest) -> PipelineState:
     state = _make_state(request)
 
+    # ── Pre-flight: Groq key required ────────────────────────────────────
+    if not (settings.groq_api_key or "").strip():
+        state.add_error(
+            "GROQ_API_KEY is not set in .env — the scraper cannot extract "
+            "product data without a Groq LLM key. Get a free key at "
+            "https://console.groq.com and add it to your .env file, then "
+            "restart the server."
+        )
+        logger.error("Pipeline aborted: GROQ_API_KEY is empty")
+        return state
+
     state = await run_planner(state)
     if not state.normalized_product:
         state.add_error("Planner: could not parse query into product attributes")
@@ -241,6 +252,19 @@ async def compare(request: CompareRequest):
         logger.exception("Unhandled pipeline error: %s", exc)
         raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}") from exc
 
+    # Only include site_statuses for sites that returned results
+    active_statuses = [
+        s for s in state.get_site_statuses_list()
+        if s.listings_found > 0
+    ]
+    # Also track sites that have offers in final results
+    sites_with_offers = {o.platform_key for o in state.final_offers}
+    # Include statuses for sites with offers OR sites that found listings
+    visible_statuses = [
+        s for s in state.get_site_statuses_list()
+        if s.listings_found > 0 or s.marketplace_key in sites_with_offers
+    ]
+
     return CompareResponse(
         query_time_seconds=round(time.time() - start, 3),
         normalized_product=state.normalized_product,
@@ -250,7 +274,7 @@ async def compare(request: CompareRequest):
         offers=state.final_offers,
         recommendation=state.final_offers[0] if state.final_offers else None,
         total_offers_found=len(state.final_offers),
-        site_statuses=state.get_site_statuses_list(),
+        site_statuses=visible_statuses,
         explanation=state.explanation or "",
         errors=state.errors,
     )

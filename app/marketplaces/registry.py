@@ -44,6 +44,7 @@ class MarketplaceConfig:
     wait_strategy:         str              = "domcontentloaded"
     needs_scroll:          bool             = True
     ready_selector:        Optional[str]    = None
+    no_results_phrases:    List[str]        = field(default_factory=list)
     brand_affinity:        List[str]        = field(default_factory=list)
 
 
@@ -87,6 +88,7 @@ def _load(raw: dict) -> MarketplaceConfig:
         wait_strategy=raw.get("wait_strategy", "domcontentloaded"),
         needs_scroll=raw.get("needs_scroll", True),
         ready_selector=raw.get("ready_selector"),
+        no_results_phrases=raw.get("no_results_phrases", []),
         brand_affinity=[b.lower() for b in raw.get("brand_affinity", [])],
     )
 

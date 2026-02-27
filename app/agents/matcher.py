@@ -2,11 +2,12 @@
 """
 Matcher agent: scores each NormalizedOffer against the NormalizedProduct target.
 Hard-rejects wrong variants and model numbers.
+Uses query-keyword overlap as the primary relevance gate.
 Scores ALL offers -- not just the first per platform.
 """
 from __future__ import annotations
 import re
-from typing import Optional
+from typing import Optional, Set
 
 from app.schemas import PipelineState, NormalizedOffer, NormalizedProduct
 from app.utils.logger import get_logger
@@ -33,12 +34,26 @@ _REJECT_KEYWORDS = [
     "watch band", "strap",
 ]
 
+# Stopwords excluded from query-keyword matching (too generic)
+_STOPWORDS: Set[str] = {
+    "the", "a", "an", "and", "or", "for", "in", "on", "at", "to", "of",
+    "with", "by", "is", "it", "its", "this", "that", "from", "up",
+    "new", "best", "buy", "price", "online", "india", "shop", "store",
+    "rs", "inr", "rupees", "product", "mobile", "phone", "smartphone",
+}
+
 
 def _tokenize(text: str) -> set:
     """Lowercase alphanumeric tokens from any string."""
     if not text:
         return set()
     return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _meaningful_query_tokens(query: str) -> set:
+    """Extract meaningful (non-stopword) tokens from the search query."""
+    tokens = _tokenize(query)
+    return tokens - _STOPWORDS
 
 
 def _extract_storage(text: str) -> Optional[str]:
@@ -66,7 +81,7 @@ def _compute_match_score(
 ) -> float:
     """
     Returns 0.0-1.0 match score.
-    0.0 = hard reject (wrong product / wrong variant).
+    0.0 = hard reject (wrong product / wrong variant / no query overlap).
     """
     title_lower  = offer.title.lower()
     title_tokens = _tokenize(offer.title)
@@ -77,12 +92,29 @@ def _compute_match_score(
     target_model   = (attrs.model   or "").lower().strip()
     target_storage = (attrs.storage or "").lower().strip()
     target_query   = (target.search_query or "").lower().strip()
+    raw_query      = (attrs.raw_query or "").lower().strip()
 
     target_model_tokens = _tokenize(target_model)
     target_query_tokens = _tokenize(target_query)
 
     # Combined target tokens for variant checking
     all_target_tokens = target_model_tokens | target_query_tokens
+
+    # ── PRIMARY GATE: query-keyword overlap ────────────────────────────────
+    # The offer title MUST contain at least some meaningful words from the
+    # user's original query.  Without this, completely unrelated products
+    # (trending items, suggested products) sneak through.
+    meaningful_q = _meaningful_query_tokens(raw_query or target_query)
+    if meaningful_q:
+        overlap = meaningful_q & title_tokens
+        overlap_ratio = len(overlap) / len(meaningful_q)
+        # Require >= 40% of meaningful query tokens in the title
+        if overlap_ratio < 0.4:
+            logger.debug(
+                "Matcher: query-keyword reject '%s' — overlap %.0f%% (%s ∩ %s)",
+                offer.title[:60], overlap_ratio * 100, overlap, meaningful_q,
+            )
+            return 0.0
 
     # -- Hard reject: wrong product category / accessory -----------------------
     # Only apply category rejection if the target query is NOT for that category
@@ -134,26 +166,34 @@ def _compute_match_score(
     score     = 0.0
     max_score = 0.0
 
-    # Brand match (0.25)
+    # Brand match (0.20)
     if target_brand:
-        max_score += 0.25
+        max_score += 0.20
         if target_brand in title_lower:
-            score += 0.25
+            score += 0.20
 
-    # Model token overlap (0.50)
+    # Model token overlap (0.40)
     if target_model_tokens:
-        max_score += 0.50
+        max_score += 0.40
         matched    = target_model_tokens & title_tokens
-        score     += 0.50 * (len(matched) / len(target_model_tokens))
+        score     += 0.40 * (len(matched) / len(target_model_tokens))
 
-    # Storage match (0.25)
+    # Storage match (0.15)
     if target_storage:
-        max_score += 0.25
+        max_score += 0.15
         if target_storage.replace(" ", "") in title_lower.replace(" ", ""):
-            score += 0.25
+            score += 0.15
+
+    # Query-keyword overlap bonus (0.25) — always available
+    if meaningful_q:
+        max_score += 0.25
+        overlap = meaningful_q & title_tokens
+        score  += 0.25 * (len(overlap) / len(meaningful_q))
 
     if max_score == 0.0:
-        return 0.5  # No target info to compare -- neutral pass
+        # Absolute fallback — no target info at all.  Use a very low score
+        # so it only passes if the min_match_score threshold allows it.
+        return 0.15
 
     return round(score / max_score, 3)
 
@@ -166,9 +206,10 @@ async def run_matcher(state: PipelineState) -> PipelineState:
         return state
 
     target     = state.normalized_product
-    min_score  = 0.0  # Accept all non-rejected offers
+    # Default min_match_score is 0.4 — filters out clearly irrelevant items
+    min_score  = 0.4
     prefs      = getattr(state, "preferences", None)
-    if prefs and hasattr(prefs, "min_match_score"):
+    if prefs and hasattr(prefs, "min_match_score") and prefs.min_match_score > 0:
         min_score = prefs.min_match_score
 
     matched = []
@@ -178,13 +219,22 @@ async def run_matcher(state: PipelineState) -> PipelineState:
         score = _compute_match_score(offer, target)
         offer.match_score = score
 
+        # Reject offers with no price — can't compare them
+        if offer.effective_price is None:
+            rejected_count += 1
+            logger.info(
+                "Matcher: rejected '%s' [%s] — no price",
+                offer.title[:50], offer.platform_key,
+            )
+            continue
+
         if score > 0.0 and score >= min_score:
             matched.append(offer)
         else:
             rejected_count += 1
             logger.info(
-                "Matcher: rejected '%s' [%s] score=%.3f",
-                offer.title[:50], offer.platform_key, score,
+                "Matcher: rejected '%s' [%s] score=%.3f (min=%.2f)",
+                offer.title[:50], offer.platform_key, score, min_score,
             )
 
     logger.info(
