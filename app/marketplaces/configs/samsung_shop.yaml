@@ -4,7 +4,7 @@ enabled: true
 base_url: https://www.samsung.com/in
 search_url_pattern: "https://www.samsung.com/in/search/?searchvalue={query}"
 trust_score_base: 0.85
-max_results: 3
+max_results: 5
 wait_strategy: "networkidle"
 needs_scroll: true
 ready_selector: "div[class*='card']"

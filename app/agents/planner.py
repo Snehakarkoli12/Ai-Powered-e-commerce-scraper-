@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple
 from app.schemas import NormalizedProduct, ProductAttributes
 from app.marketplaces.registry import marketplace_registry, MarketplaceConfig
 from app.agents import PipelineState
+from app.state import CompareState
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -150,3 +151,123 @@ async def run_planner(state: PipelineState) -> PipelineState:
     markets = _select_marketplaces(req, attrs.brand)
     state.selected_marketplace_keys = [m.key for m in markets]
     return state
+
+
+# ── LangGraph node function ──────────────────────────────────────────────────
+
+
+def _select_marketplace_keys(brand: Optional[str]) -> List[str]:
+    """Select target marketplace keys based on brand affinity.
+    Returns all enabled sites, filtered by brand affinity if applicable.
+    """
+    all_enabled = marketplace_registry.all_enabled()
+    if not brand:
+        return [m.key for m in all_enabled]
+
+    filtered = []
+    for m in all_enabled:
+        if m.brand_affinity:
+            if brand.lower() in m.brand_affinity:
+                filtered.append(m)
+        else:
+            filtered.append(m)
+
+    if not filtered:
+        filtered = all_enabled
+
+    return [m.key for m in filtered]
+
+
+async def planner_node(state: dict) -> dict:
+    """LangGraph node: Stage 1 — Parse query, select sites, handle retry.
+
+    Retry behavior (when match_attempts > 0):
+      match_attempts == 1 → drop storage constraint (storage = "")
+      match_attempts == 2 → use base model only, no variants
+      MUST reset raw_results and cleaned_results on retry
+      MUST NOT reset match_attempts (Matcher owns this counter)
+    """
+    query = state.get("query", "")
+    mode = state.get("mode", "balanced")
+    match_attempts = state.get("match_attempts", 0)
+
+    if not query.strip():
+        return {
+            "brand": "",
+            "model": "",
+            "storage": "",
+            "target_sites": [],
+            "normalized_product": NormalizedProduct(),
+        }
+
+    # Parse query with LLM → regex fallback
+    llm_result = await _llm_parse(query)
+    if llm_result:
+        attrs, search_query = llm_result
+        logger.info(
+            "Planner [LLM] (attempt=%d): %s | %s | %s → '%s'",
+            match_attempts, attrs.brand, attrs.model, attrs.storage, search_query,
+        )
+    else:
+        attrs, search_query = _regex_parse(query)
+        logger.info(
+            "Planner [regex] (attempt=%d): %s | %s | %s → '%s'",
+            match_attempts, attrs.brand, attrs.model, attrs.storage, search_query,
+        )
+
+    # ── Retry modifications ──────────────────────────────────────────────
+    if match_attempts == 1:
+        # Drop storage constraint
+        attrs.storage = None
+        search_query = f"{attrs.brand or ''} {attrs.model or ''}".strip() or query
+        logger.info("Planner retry (attempt=1): dropped storage → '%s'", search_query)
+    elif match_attempts >= 2:
+        # Use base model only, no variants
+        attrs.storage = None
+        if attrs.variant:
+            attrs.variant = None
+        # Simplify to just brand + base model
+        base_model = attrs.model or ""
+        # Remove variant words from model name
+        for v in ["ultra", "plus", "lite", "mini", "pro", "max", "fe", "edge", "neo"]:
+            base_model = re.sub(rf'\b{v}\b', '', base_model, flags=re.IGNORECASE)
+        base_model = re.sub(r'\s{2,}', ' ', base_model).strip()
+        attrs.model = base_model
+        search_query = f"{attrs.brand or ''} {base_model}".strip() or query
+        logger.info("Planner retry (attempt=2): base model only → '%s'", search_query)
+
+    # Build NormalizedProduct
+    target_sites = _select_marketplace_keys(attrs.brand)
+    normalized = NormalizedProduct(
+        attributes=attrs,
+        search_query=search_query,
+        source_url=None,
+        source_marketplace=None,
+        brand=attrs.brand or "",
+        model=attrs.model or "",
+        storage=attrs.storage or "",
+        raw_query=attrs.raw_query or query,
+        target_sites=target_sites,
+    )
+
+    logger.info(
+        "Planner ✓ — '%s %s' | sites=%d | attempt=%d",
+        normalized.brand, normalized.model, len(target_sites), match_attempts,
+    )
+
+    result = {
+        "brand": normalized.brand,
+        "model": normalized.model,
+        "storage": normalized.storage,
+        "target_sites": target_sites,
+        "normalized_product": normalized,
+    }
+
+    # On retry, MUST reset raw_results and cleaned_results
+    # (raw_results/site_statuses use add_or_reset reducer: None → reset)
+    if match_attempts > 0:
+        result["raw_results"] = None        # triggers reset via add_or_reset
+        result["site_statuses"] = None      # triggers reset via add_or_reset
+        result["cleaned_results"] = []
+
+    return result

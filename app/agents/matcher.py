@@ -1,9 +1,25 @@
 # -*- coding: utf-8 -*-
 """
 Matcher agent: scores each NormalizedOffer against the NormalizedProduct target.
-Hard-rejects wrong variants and model numbers.
-Uses query-keyword overlap as the primary relevance gate.
-Scores ALL offers -- not just the first per platform.
+
+LangGraph node: matcher_node(state) → {matched_results, match_attempts}
+Conditional edge: should_retry_or_continue(state) → "planner"/"ranker"/"explainer"
+Backward compat: run_matcher(state: PipelineState) → PipelineState
+
+6 HARD REJECTION GATES per master prompt:
+  Gate 1 → Accessory keywords in title
+  Gate 2 → Wrong brand
+  Gate 3 → Model tokens missing
+  Gate 4 → Wrong variant
+  Gate 5 → Storage mismatch
+  Gate 6 → Wrong generation
+
+WEIGHTED SCORING (only if all 6 gates passed):
+  Brand match:          +0.20
+  Model token overlap:  +0.40
+  Storage match:        +0.20
+  Query token coverage: +0.15
+  Title quality bonus:  +0.05
 """
 from __future__ import annotations
 import re
@@ -15,26 +31,35 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# -- Variant rejection tokens -------------------------------------------------
-# If target does NOT contain these tokens but title does -> hard reject (score=0)
-_VARIANT_TOKENS = {
-    "fe", "ultra", "plus", "lite", "mini",
-    "s23", "s22", "s21", "s20", "s25", "s10",
-    "a54", "a55", "a35", "a15", "a05",
-    "note", "fold", "flip",
-}
+# ── Gate 1: Accessory keywords ───────────────────────────────────────────────
 
-# Category keywords that indicate an accessory or wrong product type
-_REJECT_KEYWORDS = [
-    "television", " tv ", "monitor", "laptop", "tablet",
-    "smartwatch", "earphone", "earbud", "headphone",
-    "charger", "cable", "case", "cover",
-    "screen guard", "power bank", "speaker",
-    "trimmer", "shaver", "pain", "gel", "cream",
-    "watch band", "strap",
+_ACCESSORY_KEYWORDS = [
+    "case", "cover", "charger", "cable", "strap",
+    "screen guard", "protector", "earphone", "adapter",
+    "stand", "holder", "band", "skin", "pouch",
 ]
 
-# Stopwords excluded from query-keyword matching (too generic)
+
+# ── Gate 2: Known brands for wrong-brand rejection ──────────────────────────
+
+_KNOWN_BRANDS = {
+    "apple", "oneplus", "xiaomi", "realme",
+    "oppo", "vivo", "nokia", "motorola", "google",
+    "samsung", "redmi", "poco", "asus", "lenovo",
+    "hp", "dell", "acer", "sony", "lg",
+}
+
+
+# ── Gate 4: Variant tokens ──────────────────────────────────────────────────
+
+_VARIANT_TOKENS = {
+    "fe", "plus", "ultra", "lite", "mini",
+    "pro", "max", "edge", "neo", "a",
+}
+
+
+# ── Stopwords for query matching ─────────────────────────────────────────────
+
 _STOPWORDS: Set[str] = {
     "the", "a", "an", "and", "or", "for", "in", "on", "at", "to", "of",
     "with", "by", "is", "it", "its", "this", "that", "from", "up",
@@ -50,29 +75,15 @@ def _tokenize(text: str) -> set:
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-def _meaningful_query_tokens(query: str) -> set:
-    """Extract meaningful (non-stopword) tokens from the search query."""
-    tokens = _tokenize(query)
-    return tokens - _STOPWORDS
-
-
 def _extract_storage(text: str) -> Optional[str]:
     m = re.search(r"(\d+)\s*gb", text.lower())
     return m.group(1) + "gb" if m else None
 
 
-def _extract_model_numbers(text: str) -> set:
-    """Extract all numeric model identifiers from text.
-    E.g. 'JBL Tune 770NC' -> {'770'}
-         'Galaxy S24 Ultra' -> {'24'}
-         'iPhone 15 Pro' -> {'15'}
-    """
-    if not text:
-        return set()
-    # Find numbers that are part of model names (not storage like 128GB)
-    # Match digits that are NOT followed by GB/TB
-    tokens = re.findall(r'\b(\d{2,4})\b(?!\s*(?:gb|tb|mm|mp|mah|w|wh))', text.lower())
-    return set(tokens)
+def _extract_series_number(text: str) -> Optional[str]:
+    """Extract numeric series e.g. S24 → '24', iPhone 15 → '15'."""
+    m = re.search(r'[a-z](\d{1,3})\b', text.lower())
+    return m.group(1) if m else None
 
 
 def _compute_match_score(
@@ -81,124 +92,140 @@ def _compute_match_score(
 ) -> float:
     """
     Returns 0.0-1.0 match score.
-    0.0 = hard reject (wrong product / wrong variant / no query overlap).
+    0.0 = hard reject (failed one of 6 gates).
+    Positive score = weighted combination of matching factors.
     """
     title_lower  = offer.title.lower()
     title_tokens = _tokenize(offer.title)
 
     # Read target attributes
     attrs = target.attributes
-    target_brand   = (attrs.brand   or "").lower().strip()
-    target_model   = (attrs.model   or "").lower().strip()
-    target_storage = (attrs.storage or "").lower().strip()
+    target_brand   = (attrs.brand   or target.brand or "").lower().strip()
+    target_model   = (attrs.model   or target.model or "").lower().strip()
+    target_storage = (attrs.storage or target.storage or "").lower().strip()
     target_query   = (target.search_query or "").lower().strip()
-    raw_query      = (attrs.raw_query or "").lower().strip()
+    raw_query      = (attrs.raw_query or target.raw_query or "").lower().strip()
 
     target_model_tokens = _tokenize(target_model)
-    target_query_tokens = _tokenize(target_query)
+    target_query_tokens = _tokenize(target_query) - _STOPWORDS
 
+    # ── GATE 1: Accessory keywords ───────────────────────────────────────
+    for kw in _ACCESSORY_KEYWORDS:
+        if kw in title_lower:
+            logger.debug("Matcher: Gate 1 reject '%s' (accessory: '%s')", offer.title[:50], kw)
+            return 0.0
+
+    # ── GATE 2: Wrong brand ──────────────────────────────────────────────
+    # Only reject if a DIFFERENT known brand is present in the title
+    if target_brand:
+        for known in _KNOWN_BRANDS:
+            if known != target_brand and known in title_tokens:
+                logger.debug("Matcher: Gate 2 reject '%s' (wrong brand: '%s')", offer.title[:50], known)
+                return 0.0
+
+    # ── GATE 3: Model tokens missing ─────────────────────────────────────
+    # All target_model_tokens must appear in title_tokens
+    # Exception: allow 1 miss if len(target_model_tokens) >= 3
+    if target_model_tokens:
+        missing = target_model_tokens - title_tokens
+        allowed_misses = 1 if len(target_model_tokens) >= 3 else 0
+        if len(missing) > allowed_misses:
+            logger.debug(
+                "Matcher: Gate 3 reject '%s' (model tokens missing: %s)",
+                offer.title[:50], missing,
+            )
+            return 0.0
+
+    # ── GATE 4: Wrong variant ────────────────────────────────────────────
     # Combined target tokens for variant checking
-    all_target_tokens = target_model_tokens | target_query_tokens
+    all_target_tokens = target_model_tokens | _tokenize(raw_query or target_query)
+    target_has_variant = None
+    title_has_variant = None
+    for v in _VARIANT_TOKENS:
+        if v in all_target_tokens:
+            target_has_variant = v
+        if v in title_tokens:
+            title_has_variant = v
 
-    # ── PRIMARY GATE: query-keyword overlap ────────────────────────────────
-    # The offer title MUST contain at least some meaningful words from the
-    # user's original query.  Without this, completely unrelated products
-    # (trending items, suggested products) sneak through.
-    meaningful_q = _meaningful_query_tokens(raw_query or target_query)
-    if meaningful_q:
-        overlap = meaningful_q & title_tokens
-        overlap_ratio = len(overlap) / len(meaningful_q)
-        # Require >= 40% of meaningful query tokens in the title
-        if overlap_ratio < 0.4:
-            logger.debug(
-                "Matcher: query-keyword reject '%s' — overlap %.0f%% (%s ∩ %s)",
-                offer.title[:60], overlap_ratio * 100, overlap, meaningful_q,
-            )
-            return 0.0
+    # If target has NO variant → title must have NO variant
+    if target_has_variant is None and title_has_variant is not None:
+        logger.debug(
+            "Matcher: Gate 4 reject '%s' (has variant '%s' but target has none)",
+            offer.title[:50], title_has_variant,
+        )
+        return 0.0
 
-    # -- Hard reject: wrong product category / accessory -----------------------
-    # Only apply category rejection if the target query is NOT for that category
-    target_combined = (target_brand + " " + target_model + " " + target_query).lower()
-    for kw in _REJECT_KEYWORDS:
-        kw_clean = kw.strip()
-        if kw_clean in title_lower and kw_clean not in target_combined:
-            logger.debug("Matcher: category reject '%s' (keyword: '%s')", offer.title[:50], kw_clean)
-            return 0.0
+    # If target HAS variant → title MUST have same variant
+    if target_has_variant is not None and title_has_variant != target_has_variant:
+        logger.debug(
+            "Matcher: Gate 4 reject '%s' (variant mismatch: %s vs %s)",
+            offer.title[:50], title_has_variant, target_has_variant,
+        )
+        return 0.0
 
-    # -- Hard reject: wrong variant --------------------------------------------
-    for vtoken in _VARIANT_TOKENS:
-        target_has = vtoken in all_target_tokens
-        title_has  = vtoken in title_tokens
-
-        if title_has and not target_has:
-            logger.debug(
-                "Matcher: variant reject '%s' -- token '%s' not in target",
-                offer.title[:50], vtoken,
-            )
-            return 0.0
-
-    # -- Hard reject: wrong storage --------------------------------------------
+    # ── GATE 5: Storage mismatch ─────────────────────────────────────────
+    # Only check if target.storage is not empty
     if target_storage:
         offer_storage = _extract_storage(offer.title)
         if offer_storage and offer_storage != target_storage.replace(" ", ""):
             logger.debug(
-                "Matcher: storage reject '%s' -- %s != %s",
+                "Matcher: Gate 5 reject '%s' (storage: %s != %s)",
                 offer.title[:50], offer_storage, target_storage,
             )
             return 0.0
 
-    # -- Hard reject: wrong model number ---------------------------------------
-    # E.g. JBL Tune 770NC vs JBL Tune 750BT -> different model numbers
-    target_model_nums = _extract_model_numbers(target_model)
-    if target_model_nums:
-        offer_model_nums = _extract_model_numbers(offer.title)
-        if offer_model_nums:
-            # Check if the model numbers match
-            # If target has "770" and offer has "750", that's a mismatch
-            if not target_model_nums & offer_model_nums:
-                logger.debug(
-                    "Matcher: model number reject '%s' -- nums %s vs target %s",
-                    offer.title[:50], offer_model_nums, target_model_nums,
-                )
-                return 0.0
+    # ── GATE 6: Wrong generation ─────────────────────────────────────────
+    # Extract numeric series from target.model; title must contain same
+    target_series = _extract_series_number(target_model)
+    if target_series:
+        offer_series = _extract_series_number(offer.title)
+        if offer_series and offer_series != target_series:
+            logger.debug(
+                "Matcher: Gate 6 reject '%s' (generation: %s != %s)",
+                offer.title[:50], offer_series, target_series,
+            )
+            return 0.0
 
-    # -- Positive scoring ------------------------------------------------------
-    score     = 0.0
-    max_score = 0.0
+    # ── WEIGHTED SCORING (all 6 gates passed) ────────────────────────────
+    score = 0.0
 
-    # Brand match (0.20)
+    # Brand match: +0.20
     if target_brand:
-        max_score += 0.20
         if target_brand in title_lower:
             score += 0.20
+    else:
+        score += 0.20   # full score if no brand constraint
 
-    # Model token overlap (0.40)
+    # Model token overlap: +0.40 × (overlap / total)
     if target_model_tokens:
-        max_score += 0.40
-        matched    = target_model_tokens & title_tokens
-        score     += 0.40 * (len(matched) / len(target_model_tokens))
+        matched = target_model_tokens & title_tokens
+        score += 0.40 * (len(matched) / len(target_model_tokens))
+    else:
+        score += 0.40   # full score if no model constraint
 
-    # Storage match (0.15)
+    # Storage match: +0.20
     if target_storage:
-        max_score += 0.15
         if target_storage.replace(" ", "") in title_lower.replace(" ", ""):
-            score += 0.15
+            score += 0.20
+    else:
+        score += 0.20   # full 0.20 if no storage constraint
 
-    # Query-keyword overlap bonus (0.25) — always available
-    if meaningful_q:
-        max_score += 0.25
-        overlap = meaningful_q & title_tokens
-        score  += 0.25 * (len(overlap) / len(meaningful_q))
+    # Query token coverage: +0.15 × (overlap / total)
+    if target_query_tokens:
+        overlap = target_query_tokens & title_tokens
+        score += 0.15 * (len(overlap) / len(target_query_tokens))
+    else:
+        score += 0.15
 
-    if max_score == 0.0:
-        # Absolute fallback — no target info at all.  Use a very low score
-        # so it only passes if the min_match_score threshold allows it.
-        return 0.15
+    # Title quality bonus: +0.05 if word count between 4–20
+    word_count = len(offer.title.split())
+    if 4 <= word_count <= 20:
+        score += 0.05
 
-    return round(score / max_score, 3)
+    return round(min(score, 1.0), 3)
 
 
-# -- Public agent entry point -------------------------------------------------
+# ── Public agent entry point (backward-compat) ──────────────────────────────
 
 async def run_matcher(state: PipelineState) -> PipelineState:
     if not state.normalized_offers:
@@ -206,7 +233,6 @@ async def run_matcher(state: PipelineState) -> PipelineState:
         return state
 
     target     = state.normalized_product
-    # Default min_match_score is 0.4 — filters out clearly irrelevant items
     min_score  = 0.4
     prefs      = getattr(state, "preferences", None)
     if prefs and hasattr(prefs, "min_match_score") and prefs.min_match_score > 0:
@@ -219,13 +245,8 @@ async def run_matcher(state: PipelineState) -> PipelineState:
         score = _compute_match_score(offer, target)
         offer.match_score = score
 
-        # Reject offers with no price — can't compare them
         if offer.effective_price is None:
             rejected_count += 1
-            logger.info(
-                "Matcher: rejected '%s' [%s] — no price",
-                offer.title[:50], offer.platform_key,
-            )
             continue
 
         if score > 0.0 and score >= min_score:
@@ -239,9 +260,88 @@ async def run_matcher(state: PipelineState) -> PipelineState:
 
     logger.info(
         "Matcher: %d -> %d offers (rejected %d)",
-        len(state.normalized_offers),
-        len(matched),
-        rejected_count,
+        len(state.normalized_offers), len(matched), rejected_count,
     )
     state.matched_offers = matched
     return state
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LangGraph node function
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def matcher_node(state: dict) -> dict:
+    """LangGraph node: Stage 4 — Score and filter offers.
+
+    Entry: run_matcher(state) → {matched_results, match_attempts}
+    Increments match_attempts each run (Matcher owns this counter).
+    """
+    cleaned = state.get("cleaned_results", [])
+    normalized_product = state.get("normalized_product")
+    match_attempts = state.get("match_attempts", 0)
+
+    if not cleaned or not normalized_product:
+        logger.warning("Matcher node: empty cleaned_results or no target")
+        return {
+            "matched_results": [],
+            "match_attempts": match_attempts + 1,
+        }
+
+    # Score threshold
+    min_score = 0.4
+
+    matched = []
+    rejected = 0
+
+    for offer in cleaned:
+        # Gate A: offer.effective_price is None → reject
+        if offer.effective_price is None:
+            rejected += 1
+            continue
+
+        score = _compute_match_score(offer, normalized_product)
+        offer.match_score = score
+
+        # Gate B: score == 0.0 OR score < min_score → reject
+        if score == 0.0 or score < min_score:
+            rejected += 1
+            logger.info(
+                "Matcher node: rejected '%s' [%s] score=%.3f",
+                offer.title[:50], offer.platform_key, score,
+            )
+            continue
+
+        matched.append(offer)
+
+    new_attempts = match_attempts + 1
+    logger.info(
+        "Matcher node: %d → %d matched, %d rejected (attempt #%d)",
+        len(cleaned), len(matched), rejected, new_attempts,
+    )
+
+    return {
+        "matched_results": matched,
+        "match_attempts": new_attempts,
+    }
+
+
+def should_retry_or_continue(state: dict) -> str:
+    """LangGraph conditional edge after matcher.
+
+    matched empty AND attempts < 2  → "planner" (loop back for retry)
+    matched empty AND attempts >= 2 → "explainer" (graceful fail)
+    matched not empty               → "ranker"
+    """
+    matched  = state.get("matched_results", [])
+    attempts = state.get("match_attempts", 0)
+
+    if matched:
+        logger.info("Matcher → ranker (%d matched offers)", len(matched))
+        return "ranker"
+    elif attempts < 2:
+        logger.info("Matcher → planner (retry, attempts=%d)", attempts)
+        return "planner"
+    else:
+        logger.info("Matcher → explainer (graceful fail, attempts=%d)", attempts)
+        return "explainer"

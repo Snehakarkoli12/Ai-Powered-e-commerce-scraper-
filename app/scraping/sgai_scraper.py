@@ -205,15 +205,30 @@ def _build_llm_input(page_text: str, word_budget: int) -> str:
     # Strip image markers (saves tokens)
     text = re.sub(r'\[IMG:[^\]]{0,500}\]', '', text)
 
-    # Truncate long URL markers — keep path part only, max 120 chars
+    # Shorten long URL markers but KEEP enough for valid product URLs
     def _shorten_url_marker(m: re.Match) -> str:
-        url = m.group(1)
+        url = m.group(1).strip()
         try:
             parsed = urlparse(url)
-            short = parsed.path[:100]  # keep path, truncate
+            # Keep path + essential query params (pid, productId, itemId, etc.)
+            path = parsed.path
+            if parsed.query:
+                # Keep only product-identifying query params, drop tracking noise
+                from urllib.parse import parse_qs, urlencode
+                keep_keys = {
+                    "pid", "productid", "itemid", "skuid", "id", "product_id",
+                    "item_id", "sku", "q", "productId", "itemId", "skuId",
+                }
+                qs = parse_qs(parsed.query)
+                kept = {k: v[0] for k, v in qs.items()
+                        if k.lower() in {x.lower() for x in keep_keys}}
+                if kept:
+                    path = f"{path}?{urlencode(kept)}"
+            # Keep up to 250 chars (product URLs can be long on Indian sites)
+            short = path[:250]
             return f"[URL:{short}]"
         except Exception:
-            return url[:120]
+            return f"[URL:{url[:250]}]"
 
     text = re.sub(r'\[URL:([^\]]{0,2000})\]', _shorten_url_marker, text)
 
@@ -241,50 +256,57 @@ def _build_llm_input(page_text: str, word_budget: int) -> str:
 
 def _build_prompt(search_query: str, max_results: int) -> str:
     return (
-        f"Extract up to {max_results} product listings for '{search_query}' "
+        f"Extract EXACTLY up to {max_results} product listings for '{search_query}' "
         f"from this Indian e-commerce search results page.\n\n"
-        f"CRITICAL RULES:\n"
-        f"- ONLY extract products that MATCH the search query '{search_query}'. "
-        f"Skip trending products, recommended products, sponsored ads for DIFFERENT items, "
-        f"and any product whose name does NOT contain the key words from '{search_query}'.\n"
-        f"- price_text: The CURRENT SELLING PRICE shown on the page. "
-        f"Indian prices use formats like: Rs 55,999 or Rs.1,29,999 or 55,999 or INR 55999. "
-        f"Extract the EXACT price string as shown. This is the MOST IMPORTANT field.\n"
-        f"- original_price_text: The MRP / strikethrough / crossed-out price if different from selling price. null if not shown.\n"
-        f"- listing_url: Extract from [URL:/path/to/product] markers near each product. "
-        f"Use the URL that points to a product detail page.\n"
-        f"- title: Full product name including brand, model, variant. No 'Add to Cart' text.\n"
+        f"═══ STRICT RELEVANCE RULES (100% MATCH REQUIRED) ═══\n"
+        f"1. ONLY extract products whose title contains the EXACT brand AND model from '{search_query}'.\n"
+        f"   Example: query='Samsung Galaxy S24 128GB' → ONLY extract products with 'Samsung' AND 'Galaxy S24' in title.\n"
+        f"   REJECT: different brands (OnePlus, Xiaomi, Apple, etc.), different models (S23, S25, A54, etc.),\n"
+        f"   phone cases, covers, screen guards, cables, chargers, accessories.\n"
+        f"2. If the query specifies a storage variant (e.g. 128GB), prefer that variant but also accept\n"
+        f"   other storage variants of the SAME model.\n"
+        f"3. NEVER extract trending items, 'you might also like', 'customers also bought', or sponsored ads\n"
+        f"   for DIFFERENT products.\n"
+        f"4. If fewer than {max_results} relevant products exist on the page, return ONLY those. Do NOT pad with irrelevant items.\n\n"
+        f"═══ FIELD EXTRACTION RULES ═══\n"
+        f"- title: Full product name with brand, model, storage, color. No 'Add to Cart' or 'Buy Now' text.\n"
+        f"- price_text: The CURRENT SELLING PRICE on the page. Indian formats: Rs 55,999 | Rs.1,29,999 | 55,999 | INR 55999.\n"
+        f"  Extract the EXACT price string. This is the MOST IMPORTANT field. If you see numbers like 55999 near a product, that IS the price.\n"
+        f"- original_price_text: MRP / strikethrough price if different from selling price. null if same or not shown.\n"
+        f"- listing_url: Extract from [URL:/path/to/product] markers near each product.\n"
+        f"  Use the URL that leads to the product DETAIL page (not category/search page).\n"
+        f"  This MUST be a real path from the page text — NEVER invent or hallucinate a URL.\n"
         f"- rating_text: Star rating (e.g. '4.3'). null if not shown.\n"
         f"- review_count_text: Number of ratings/reviews. null if not shown.\n"
         f"- delivery_text: Delivery estimate if shown. null if not visible.\n"
         f"- image_url: null (not needed).\n"
         f"- seller_text: Seller name if shown. null if not shown.\n"
         f"- return_policy_text: null.\n\n"
-        f"RELEVANCE FILTER: A product is relevant ONLY if its title contains the brand "
-        f"and model from '{search_query}'. For example, if the query is 'Samsung Galaxy S24', "
-        f"do NOT extract 'OnePlus Nord', 'Xiaomi 14', or phone cases/covers.\n"
-        f"Return REAL products only. Skip accessories, cases, cables unless the query asks for them.\n"
-        f"Do NOT hallucinate or invent data. If a field is not visible, use null.\n"
-        f"IMPORTANT: You MUST extract price_text for every product. If you see numbers like "
-        f"55999 or 55,999 near a product title, that IS the price."
+        f"═══ ABSOLUTE PROHIBITIONS ═══\n"
+        f"- Do NOT hallucinate or invent ANY data. Every field must come from the page text.\n"
+        f"- Do NOT fabricate URLs. If no [URL:...] marker is near a product, set listing_url to null.\n"
+        f"- Do NOT include accessories, cases, covers, screen guards, cables, adapters unless the query explicitly asks for them."
     )
 
 
 _SYSTEM_PROMPT = (
     "You are an expert product data extractor for Indian e-commerce websites. "
     "You read raw page text and extract structured product data.\n\n"
-    "CRITICAL: Indian prices appear as: Rs 55,999 | Rs. 1,29,999 | INR 55999 | "
+    "CRITICAL PRICE FORMAT: Indian prices appear as: Rs 55,999 | Rs. 1,29,999 | INR 55999 | "
     "just bare numbers like 55999 near product names. "
     "Indian lakhs format: 1,29,999 means 129999 (one lakh twenty nine thousand).\n\n"
-    "RELEVANCE RULE: ONLY extract products whose title matches the search query. "
-    "Do NOT extract trending items, 'you might also like' suggestions, or products "
-    "from a different brand/model than what was searched. If the search is for "
-    "'Samsung Galaxy S24', only extract Samsung Galaxy S24 variants — NOT other phones.\n\n"
+    "STRICT RELEVANCE: ONLY extract products whose title contains the EXACT brand "
+    "AND model from the search query. A product is relevant ONLY if the brand name "
+    "and model number/name both appear in its title. "
+    "Do NOT extract trending items, 'you might also like', or products from a "
+    "DIFFERENT brand or model. If query is 'Samsung Galaxy S24' → ONLY Samsung Galaxy S24 variants.\n\n"
+    "URL EXTRACTION: Look for [URL:/some/path] markers in the text near each product. "
+    "Use the URL path that leads to the product detail page. "
+    "NEVER invent or fabricate a URL. If no [URL:...] marker is near a product, set listing_url to null.\n\n"
     "Return ONLY a valid JSON object with key 'products' containing an array. "
     "Each product: {title, price_text, original_price_text, rating_text, "
     "review_count_text, delivery_text, listing_url, image_url, seller_text, "
-    "return_policy_text}.\n\n"
-    "For listing_url: extract from [URL:/some/path] markers in the text.\n"
+    "return_policy_text}.\n"
     "Use null for missing fields. No markdown fences. Raw JSON ONLY."
 )
 
@@ -622,20 +644,28 @@ def _clean_url(raw: Optional[str], base_url: str) -> str:
     raw = raw.strip()
     if raw.lower() in _NULL_VALS:
         return ""
+    # Strip [URL:...] wrapper if LLM kept it
     if raw.startswith("[URL:"):
         raw = raw[5:].rstrip("]").strip()
-    if not raw or raw.lower() == "[url]":
+    if not raw or raw.lower() in ("[url]", "[url:]", "url"):
         return ""
+    # Reject fake/hallucinated domains
     try:
-        domain = urlparse(raw).netloc.lower().replace("www.", "")
+        parsed = urlparse(raw)
+        domain = (parsed.netloc or "").lower().replace("www.", "")
         if domain in _FAKE_DOMAINS:
             return ""
     except Exception:
-        return ""
+        pass
+    # Already absolute
     if raw.startswith("http"):
         return raw
+    # Relative path → prepend base_url
     if raw.startswith("/"):
         return base_url.rstrip("/") + raw
+    # Looks like a relative path without leading slash (e.g. "dp/B0xxx")
+    if any(raw.startswith(prefix) for prefix in ("dp/", "p/", "search/", "product")):
+        return base_url.rstrip("/") + "/" + raw
     return ""
 
 

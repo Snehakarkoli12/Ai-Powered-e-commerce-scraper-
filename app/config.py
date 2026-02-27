@@ -29,6 +29,15 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
+    # ── Redis (optional caching) ─────────────────────────────────────────────
+    redis_url: str = ""       # e.g. redis://localhost:6379/0
+
+    # ── SerpAPI (Feature 2 — Chatbot Assistant) ───────────────────────────────
+    serpapi_key: str = ""     # Get key at https://serpapi.com
+
+    # ── PostgreSQL (optional price history) ───────────────────────────────────
+    database_url: str = ""    # e.g. postgresql://user:pass@localhost:5432/prices
+
     # ── App ───────────────────────────────────────────────────────────────────
     debug:     bool = False
     log_level: str  = "INFO"

@@ -8,7 +8,7 @@ Pydantic v2 compliant — no class Config anywhere.
 from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -54,6 +54,7 @@ class RankingPreferences(BaseModel):
 class CompareRequest(BaseModel):
     query:                Optional[str]       = None
     product_url:          Optional[str]       = None
+    mode:                 str                 = "balanced"
     preferences:          RankingPreferences  = Field(default_factory=RankingPreferences)
     allowed_marketplaces: Optional[List[str]] = None
 
@@ -84,6 +85,26 @@ class NormalizedProduct(BaseModel):
     source_url:         Optional[str]     = None
     source_marketplace: Optional[str]     = None
 
+    # Master prompt top-level convenience fields
+    brand:        str       = ""
+    model:        str       = ""
+    storage:      str       = ""
+    raw_query:    str       = ""
+    target_sites: List[str] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def sync_from_attributes(self):
+        """Auto-populate top-level fields from nested attributes."""
+        if not self.brand and self.attributes and self.attributes.brand:
+            self.brand = self.attributes.brand
+        if not self.model and self.attributes and self.attributes.model:
+            self.model = self.attributes.model
+        if not self.storage and self.attributes and self.attributes.storage:
+            self.storage = self.attributes.storage or ""
+        if not self.raw_query and self.attributes and self.attributes.raw_query:
+            self.raw_query = self.attributes.raw_query or ""
+        return self
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SCRAPER OUTPUT
@@ -96,6 +117,30 @@ class SiteStatus(BaseModel):
     status:           SiteStatusCode = SiteStatusCode.PENDING
     message:          str            = ""
     listings_found:   int            = 0
+
+    # Master prompt alias fields
+    site:          str = ""
+    status_string: str = ""   # "success"/"blocked"/"no_results"/"parse_error"
+    listing_count: int = 0
+
+    @model_validator(mode='after')
+    def sync_aliases(self):
+        """Auto-populate master prompt alias fields."""
+        if not self.site:
+            self.site = self.marketplace_key
+        if not self.listing_count:
+            self.listing_count = self.listings_found
+        if not self.status_string:
+            _map = {
+                SiteStatusCode.OK: "success",
+                SiteStatusCode.BOT_CHALLENGE: "blocked",
+                SiteStatusCode.NO_RESULTS: "no_results",
+                SiteStatusCode.ERROR: "parse_error",
+                SiteStatusCode.TIMEOUT: "blocked",
+                SiteStatusCode.PENDING: "pending",
+            }
+            self.status_string = _map.get(self.status, "error")
+        return self
 
 
 class RawListing(BaseModel):
@@ -167,6 +212,30 @@ class NormalizedOffer(BaseModel):
     recommendation_note: Optional[str]  = None
     rank:                int            = 0
     badges:              List[str]      = Field(default_factory=list)
+
+    # Master prompt fields
+    raw_price:       Optional[str]   = None
+    composite_score: float           = 0.0
+    site:            str             = ""
+    url:             str             = ""
+    rating:          Optional[float] = None
+    delivery:        Optional[str]   = None
+
+    @model_validator(mode='after')
+    def sync_offer_aliases(self):
+        """Auto-populate master prompt alias fields — ensure bidirectional URL sync."""
+        if not self.site:
+            self.site = self.platform_key
+        # Bidirectional URL sync: whichever has a value, copy to the other
+        if self.listing_url and not self.url:
+            self.url = self.listing_url
+        elif self.url and not self.listing_url:
+            self.listing_url = self.url
+        if self.rating is None:
+            self.rating = self.seller_rating
+        if not self.delivery:
+            self.delivery = self.delivery_text
+        return self
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

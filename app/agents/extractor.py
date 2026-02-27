@@ -2,10 +2,21 @@
 """
 Extractor agent: RawListing -> NormalizedOffer
 Parses price, delivery, rating from text fields.
+
+LangGraph node: extractor_node(state) → {cleaned_results: [...]}
+Backward-compat: run_extractor(state) → PipelineState
+
+5 transformations in EXACT order per master prompt:
+  1. PRICE NORMALIZATION (Regex)
+  2. RATING NORMALIZATION (Regex)
+  3. DELIVERY NORMALIZATION (Regex)
+  4. URL CLEANING (Regex)
+  5. DEDUPLICATION
 """
 from __future__ import annotations
 import re
 from typing import Optional, Tuple
+from urllib.parse import urlparse, urlencode, parse_qs, quote_plus
 
 from app.schemas import PipelineState, RawListing, NormalizedOffer
 from app.marketplaces.registry import marketplace_registry
@@ -233,3 +244,176 @@ async def run_extractor(state: PipelineState) -> PipelineState:
         len(deduped) - null_price_count, len(state.raw_listings),
     )
     return state
+
+
+# ── URL cleaning per master prompt ───────────────────────────────────────────
+
+# Tracking query params we always want to strip (analytics noise)
+_TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+    "ref", "ref_", "tag", "campaign", "crid", "sprefix", "qid", "sr",
+    "linkcode", "camp", "creative", "creativesin", "th", "psc",
+    "s", "otracker", "searchclick", "marketplace", "store", "srno",
+    "lid", "ssid", "qH", "affid", "dclid", "gclid", "fbclid",
+    "affiliate_id", "offer_id", "_referer",
+}
+
+
+def _clean_url_for_site(url: str, site_key: str) -> str:
+    """Clean URLs per master prompt:
+    Amazon: extract /dp/ASIN only → full amazon.in URL
+    Flipkart: base URL + path (keeps pid if present)
+    Others: keep full URL, only strip tracking params
+    """
+    if not url:
+        return ""
+
+    url = url.strip()
+
+    # If URL is a bare path, prepend the base URL from marketplace config
+    if url.startswith("/"):
+        cfg = marketplace_registry.get(site_key)
+        base = cfg.base_url.rstrip("/") if cfg else ""
+        if base:
+            url = base + url
+        else:
+            return ""
+
+    # Must start with http now
+    if not url.startswith("http"):
+        # Try prepending base URL as last resort
+        cfg = marketplace_registry.get(site_key)
+        if cfg and cfg.base_url:
+            url = cfg.base_url.rstrip("/") + "/" + url.lstrip("/")
+        else:
+            return ""
+
+    try:
+        parsed = urlparse(url)
+
+        if site_key == "amazon" or "amazon" in parsed.netloc:
+            # Extract /dp/ASIN pattern
+            m = re.search(r'/dp/([A-Z0-9]{10})', url)
+            if m:
+                return f"https://www.amazon.in/dp/{m.group(1)}"
+            return url.split("/ref=")[0]  # Still valid, just strip ref param
+
+        if site_key == "flipkart" or "flipkart" in parsed.netloc:
+            # Keep base URL + path + pid param if present
+            base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            qs = parse_qs(parsed.query)
+            if "pid" in qs:
+                return f"{base}?pid={qs['pid'][0]}"
+            return base
+
+        # For ALL other sites: keep the full URL but strip tracking params
+        if parsed.query:
+            qs = parse_qs(parsed.query)
+            cleaned_qs = {k: v[0] for k, v in qs.items()
+                          if k.lower() not in _TRACKING_PARAMS}
+            if cleaned_qs:
+                clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{urlencode(cleaned_qs)}"
+            else:
+                clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        else:
+            clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+        return clean if parsed.netloc else url
+
+    except Exception:
+        return url
+
+
+def _build_fallback_url(title: str, site_key: str) -> str:
+    """Generate a search URL for the product on the given marketplace.
+    Used when no direct product URL was extracted.
+    """
+    from urllib.parse import quote_plus
+    cfg = marketplace_registry.get(site_key)
+    if not cfg or not cfg.search_url_pattern:
+        return ""
+    try:
+        # Use first 60 chars of title as search query (avoid overly long URLs)
+        search_term = title.strip()[:60].strip()
+        return cfg.search_url_pattern.format(query=quote_plus(search_term))
+    except Exception:
+        return ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LangGraph node function
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def extractor_node(state: dict) -> dict:
+    """LangGraph node: Stage 3 — Normalize raw scraper results.
+
+    5 transformations in EXACT order:
+      1. PRICE NORMALIZATION
+      2. RATING NORMALIZATION
+      3. DELIVERY NORMALIZATION
+      4. URL CLEANING
+      5. DEDUPLICATION
+
+    Rule: if price unparseable → skip listing entirely.
+    Final: sorted by effective_price ascending.
+    """
+    raw_results = state.get("raw_results", [])
+
+    if not raw_results:
+        logger.warning("Extractor node: no raw results to process")
+        return {"cleaned_results": []}
+
+    offers = []
+    for listing in raw_results:
+        offer = _normalize(listing)
+        if offer is None:
+            continue
+        # Master prompt: if price unparseable → skip listing entirely
+        if offer.effective_price is None:
+            continue
+
+        # Set master prompt alias fields
+        offer.raw_price = listing.price_text if hasattr(listing, 'price_text') else None
+        offer.site = offer.platform_key
+        offer.url = offer.listing_url
+        offer.rating = offer.seller_rating
+        offer.delivery = offer.delivery_text
+
+        # URL cleaning per site
+        offer.listing_url = _clean_url_for_site(offer.listing_url, offer.platform_key)
+        # Fallback: if no valid product URL, generate a search URL so frontend always has a link
+        if not offer.listing_url:
+            offer.listing_url = _build_fallback_url(offer.title, offer.platform_key)
+            if offer.listing_url:
+                logger.info(
+                    "Extractor [%s]: no product URL for '%s' → fallback search URL",
+                    offer.platform_key, offer.title[:50],
+                )
+        offer.url = offer.listing_url
+
+        offers.append(offer)
+
+    # Deduplication: fingerprint = site + str(effective_price) + title[:40].lower()
+    seen = set()
+    deduped = []
+    for offer in offers:
+        fp = f"{offer.platform_key}_{offer.effective_price}_{offer.title[:40].lower()}"
+        if fp in seen:
+            logger.debug(
+                "Extractor node dedup: dropped [%s] '%s'",
+                offer.platform_key, offer.title[:50],
+            )
+            continue
+        seen.add(fp)
+        deduped.append(offer)
+
+    # Sort by effective_price ascending
+    deduped.sort(key=lambda o: o.effective_price if o.effective_price is not None else float('inf'))
+
+    logger.info(
+        "Extractor node: %d raw → %d normalized → %d deduped (sorted by price)",
+        len(raw_results), len(offers), len(deduped),
+    )
+
+    return {"cleaned_results": deduped}

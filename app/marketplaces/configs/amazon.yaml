@@ -5,7 +5,7 @@ base_url: https://www.amazon.in
 # Sorted by avg_review to avoid "iPhone Air" appearing first
 search_url_pattern: "https://www.amazon.in/s?k={query}&i=electronics&s=review-rank"
 trust_score_base: 0.92
-max_results: 8
+max_results: 5
 wait_strategy: "domcontentloaded"
 needs_scroll: true
 ready_selector: "[data-component-type='s-search-result']"

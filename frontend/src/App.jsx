@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import ChatbotAssistant from './components/ChatbotAssistant'
 
 const API_BASE = ''  // Proxied via vite.config.js
 
@@ -77,20 +78,24 @@ function OfferCard({ offer, index }) {
                 </div>
             </div>
 
-            {offer.badges?.length > 0 && (
-                <div className="offer-card__footer">
+            <div className="offer-card__footer">
+                {offer.badges?.length > 0 && (
                     <div className="offer-card__badges">
                         {offer.badges.map((badge, i) => (
                             <span key={i} className={`badge ${getBadgeClass(badge)}`}>{badge}</span>
                         ))}
                     </div>
-                    {offer.listing_url && (
-                        <a href={offer.listing_url} target="_blank" rel="noopener noreferrer" className="offer-card__link">
-                            View Deal →
-                        </a>
-                    )}
-                </div>
-            )}
+                )}
+                {(offer.listing_url || offer.url) ? (
+                    <a href={offer.listing_url || offer.url} target="_blank" rel="noopener noreferrer" className="offer-card__link">
+                        View Deal →
+                    </a>
+                ) : (
+                    <span className="offer-card__link offer-card__link--disabled" style={{ opacity: 0.4, cursor: 'default' }}>
+                        No link available
+                    </span>
+                )}
+            </div>
 
             {(sb.price_score != null || sb.delivery_score != null || sb.trust_score != null) && (
                 <div className="score-bar">
@@ -129,6 +134,7 @@ function App() {
     const [result, setResult] = useState(null)
     const [error, setError] = useState(null)
     const [elapsed, setElapsed] = useState(0)
+    const [progress, setProgress] = useState(null) // SSE progress tracking
 
     const handleSearch = useCallback(async (e) => {
         e.preventDefault()
@@ -137,6 +143,7 @@ function App() {
         setLoading(true)
         setError(null)
         setResult(null)
+        setProgress(null)
 
         const startTime = Date.now()
         const timer = setInterval(() => {
@@ -149,6 +156,7 @@ function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     query: query.trim(),
+                    mode,
                     preferences: { mode, min_match_score: 0.4 },
                 }),
             })
@@ -158,13 +166,82 @@ function App() {
                 throw new Error(errData.detail || `Server error: ${response.status}`)
             }
 
-            const data = await response.json()
-            setResult(data)
+            const contentType = response.headers.get('content-type') || ''
+
+            if (contentType.includes('text/event-stream')) {
+                // ── SSE streaming mode ──
+                const reader = response.body.getReader()
+                const decoder = new TextDecoder()
+                let buffer = ''
+                const siteStatuses = []
+                let matchedCount = 0
+                let rankedCount = 0
+
+                while (true) {
+                    const { value, done } = await reader.read()
+                    if (done) break
+
+                    buffer += decoder.decode(value, { stream: true })
+                    const parts = buffer.split('\n\n')
+                    buffer = parts.pop() || ''
+
+                    for (const part of parts) {
+                        if (!part.trim()) continue
+                        const eventMatch = part.match(/event:\s*(\S+)\ndata:\s*(.+)/s)
+                        if (!eventMatch) continue
+                        const [, eventType, dataStr] = eventMatch
+
+                        let data
+                        try { data = JSON.parse(dataStr) } catch { continue }
+
+                        if (eventType === 'scraping_started') {
+                            setProgress({ stage: 'scraping', sites: data.sites || [], completedSites: [] })
+
+                        } else if (eventType === 'site_done') {
+                            siteStatuses.push(data)
+                            setProgress((prev) => ({
+                                ...prev,
+                                stage: 'scraping',
+                                completedSites: [...(prev?.completedSites || []), data.marketplace_key || data.site || ''],
+                            }))
+
+                        } else if (eventType === 'matching_done') {
+                            matchedCount = data.matched_count || 0
+                            setProgress((prev) => ({ ...prev, stage: 'matching', matchedCount }))
+
+                        } else if (eventType === 'ranking_done') {
+                            rankedCount = data.ranked_count || 0
+                            setProgress((prev) => ({ ...prev, stage: 'ranking', rankedCount }))
+
+                        } else if (eventType === 'final_result') {
+                            // Build a result object compatible with existing UI
+                            const finalResult = {
+                                final_offers: data.ranked_offers || [],
+                                site_statuses: data.site_statuses || siteStatuses,
+                                explanation: data.explanation || '',
+                                best_deal: data.best_deal,
+                                total_offers_found: (data.ranked_offers || []).length,
+                                query_time_seconds: data.query_time_seconds || Math.round((Date.now() - startTime) / 1000),
+                                normalized_product: data.normalized_product,
+                            }
+                            setResult(finalResult)
+
+                        } else if (eventType === 'error') {
+                            throw new Error(data.error || 'Pipeline error')
+                        }
+                    }
+                }
+            } else {
+                // ── JSON fallback (backward-compatible) ──
+                const data = await response.json()
+                setResult(data)
+            }
         } catch (err) {
             setError(err.message || 'Failed to connect to the backend. Is the server running?')
         } finally {
             clearInterval(timer)
             setLoading(false)
+            setProgress(null)
         }
     }, [query, mode, loading])
 
@@ -174,7 +251,7 @@ function App() {
             <header className="header">
                 <div className="header__logo">
                     <div className="header__icon">🔍</div>
-                    <h1 className="header__title">Agentic Price Browser</h1>
+                    <h1 className="header__title">AI Price Comparison</h1>
                 </div>
                 <p className="header__subtitle">
                     AI-powered price comparison across 10+ Indian e-commerce marketplaces
@@ -217,12 +294,38 @@ function App() {
                 </div>
             </section>
 
-            {/* Loading */}
+            {/* Loading with live progress */}
             {loading && (
                 <div className="loading">
                     <div className="loading__spinner" />
-                    <div className="loading__text">Scraping {mode === 'balanced' ? 'all' : ''} marketplaces...</div>
-                    <div className="loading__subtext">Launching browsers, extracting prices, matching products</div>
+                    {progress?.stage === 'scraping' ? (
+                        <>
+                            <div className="loading__text">
+                                Scraping marketplaces... ({progress.completedSites?.length || 0}/{progress.sites?.length || '?'})
+                            </div>
+                            <div className="loading__subtext">
+                                {progress.completedSites?.length > 0
+                                    ? `Done: ${progress.completedSites.join(', ')}`
+                                    : 'Launching browsers, extracting prices...'}
+                            </div>
+                        </>
+                    ) : progress?.stage === 'matching' ? (
+                        <>
+                            <div className="loading__text">Matching products...</div>
+                            <div className="loading__subtext">{progress.matchedCount} offers matched so far</div>
+                        </>
+                    ) : progress?.stage === 'ranking' ? (
+                        <>
+                            <div className="loading__text">Ranking offers...</div>
+                            <div className="loading__subtext">{progress.rankedCount} offers ranked</div>
+                        </>
+                    ) : (
+                        <>
+                            <div className="loading__text">Scraping {mode === 'balanced' ? 'all' : ''} marketplaces...</div>
+                            <div className="loading__subtext">Launching browsers, extracting prices, matching products</div>
+                        </>
+                    )}
+                    <div className="loading__elapsed">{elapsed}s</div>
                 </div>
             )}
 
@@ -281,14 +384,14 @@ function App() {
                                 {result.site_statuses
                                     .filter((s) => s.listings_found > 0 || s.status === 'ok')
                                     .map((s, i) => (
-                                    <div key={i} className="site-status">
-                                        <div className={`site-status__dot ${getStatusDotClass(s.status)}`} />
-                                        <span className="site-status__name">{s.marketplace_name || s.marketplace_key}</span>
-                                        {s.listings_found > 0 && (
-                                            <span className="site-status__count">({s.listings_found})</span>
-                                        )}
-                                    </div>
-                                ))}
+                                        <div key={i} className="site-status">
+                                            <div className={`site-status__dot ${getStatusDotClass(s.status)}`} />
+                                            <span className="site-status__name">{s.marketplace_name || s.marketplace_key}</span>
+                                            {s.listings_found > 0 && (
+                                                <span className="site-status__count">({s.listings_found})</span>
+                                            )}
+                                        </div>
+                                    ))}
                             </div>
                         </div>
                     )}
@@ -335,4 +438,13 @@ function App() {
     )
 }
 
-export default App
+function AppWithChatbot() {
+    return (
+        <>
+            <App />
+            <ChatbotAssistant />
+        </>
+    )
+}
+
+export default AppWithChatbot
