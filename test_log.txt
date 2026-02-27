@@ -1,4 +1,0 @@
-  File "<string>", line 1
-    import requests,json; r=requests.post('http://127.0.0.1:8000/api/debug/compare',json=json.loads('{query:JBL
-                                                                                                    ^
-SyntaxError: unterminated string literal (detected at line 1)
