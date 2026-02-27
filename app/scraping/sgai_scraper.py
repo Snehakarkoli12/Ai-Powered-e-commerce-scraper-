@@ -244,6 +244,9 @@ def _build_prompt(search_query: str, max_results: int) -> str:
         f"Extract up to {max_results} product listings for '{search_query}' "
         f"from this Indian e-commerce search results page.\n\n"
         f"CRITICAL RULES:\n"
+        f"- ONLY extract products that MATCH the search query '{search_query}'. "
+        f"Skip trending products, recommended products, sponsored ads for DIFFERENT items, "
+        f"and any product whose name does NOT contain the key words from '{search_query}'.\n"
         f"- price_text: The CURRENT SELLING PRICE shown on the page. "
         f"Indian prices use formats like: Rs 55,999 or Rs.1,29,999 or 55,999 or INR 55999. "
         f"Extract the EXACT price string as shown. This is the MOST IMPORTANT field.\n"
@@ -257,6 +260,9 @@ def _build_prompt(search_query: str, max_results: int) -> str:
         f"- image_url: null (not needed).\n"
         f"- seller_text: Seller name if shown. null if not shown.\n"
         f"- return_policy_text: null.\n\n"
+        f"RELEVANCE FILTER: A product is relevant ONLY if its title contains the brand "
+        f"and model from '{search_query}'. For example, if the query is 'Samsung Galaxy S24', "
+        f"do NOT extract 'OnePlus Nord', 'Xiaomi 14', or phone cases/covers.\n"
         f"Return REAL products only. Skip accessories, cases, cables unless the query asks for them.\n"
         f"Do NOT hallucinate or invent data. If a field is not visible, use null.\n"
         f"IMPORTANT: You MUST extract price_text for every product. If you see numbers like "
@@ -270,6 +276,10 @@ _SYSTEM_PROMPT = (
     "CRITICAL: Indian prices appear as: Rs 55,999 | Rs. 1,29,999 | INR 55999 | "
     "just bare numbers like 55999 near product names. "
     "Indian lakhs format: 1,29,999 means 129999 (one lakh twenty nine thousand).\n\n"
+    "RELEVANCE RULE: ONLY extract products whose title matches the search query. "
+    "Do NOT extract trending items, 'you might also like' suggestions, or products "
+    "from a different brand/model than what was searched. If the search is for "
+    "'Samsung Galaxy S24', only extract Samsung Galaxy S24 variants — NOT other phones.\n\n"
     "Return ONLY a valid JSON object with key 'products' containing an array. "
     "Each product: {title, price_text, original_price_text, rating_text, "
     "review_count_text, delivery_text, listing_url, image_url, seller_text, "
@@ -353,6 +363,21 @@ _EXTRACT_TEXT_JS = """
         document.querySelectorAll('[style*="display: none"], [style*="display:none"], [hidden]')
             .forEach(el => el.remove());
 
+        // Remove navigation / header / footer noise to save LLM tokens
+        ['nav', 'header', 'footer'].forEach(tag => {
+            document.querySelectorAll(tag).forEach(el => el.remove());
+        });
+        // Also remove common noise containers by role or class
+        document.querySelectorAll(
+            '[role="navigation"], [role="banner"], [role="contentinfo"], ' +
+            '[class*="navbar"], [class*="Navbar"], [class*="NavBar"], ' +
+            '[class*="header-menu"], [class*="HeaderMenu"], ' +
+            '[class*="footer"], [class*="Footer"], ' +
+            '[class*="sidebar"], [class*="SideBar"], [class*="Sidebar"], ' +
+            '[class*="mega-menu"], [class*="MegaMenu"], ' +
+            '[class*="cookie"], [class*="Cookie"]'
+        ).forEach(el => el.remove());
+
         // Inject URL markers next to links
         document.querySelectorAll('a[href]').forEach(a => {
             try {
@@ -369,6 +394,57 @@ _EXTRACT_TEXT_JS = """
         return document.body ? document.body.innerText : '';
     } catch(e) {
         return document.body ? document.body.innerText : '';
+    }
+}
+"""
+
+# Targeted extraction JS: extracts text only from product container area
+# Used when we have a ready_selector that matched — we know where products are
+_EXTRACT_PRODUCTS_JS = """
+(containerSelector) => {
+    try {
+        // Find ALL matching product containers
+        const containers = document.querySelectorAll(containerSelector);
+        if (!containers || containers.length === 0) return '';
+
+        // Collect text from all product containers, injecting URL markers
+        let texts = [];
+        containers.forEach(c => {
+            // Inject URL markers for links INSIDE the container
+            c.querySelectorAll('a[href]').forEach(a => {
+                try {
+                    const href = a.getAttribute('href') || '';
+                    if (href && href !== '#' && href.length > 3 &&
+                        !href.startsWith('javascript:') &&
+                        (href.startsWith('/') || href.startsWith('http'))) {
+                        a.appendChild(document.createTextNode(' [URL:' + href + '] '));
+                    }
+                } catch(e) {}
+            });
+
+            let t = c.innerText.trim();
+
+            // Check if container's parent/ancestor is an <a> with href
+            // (common pattern: link wraps the card, not inside it)
+            let parent = c.parentElement;
+            for (let i = 0; i < 3 && parent; i++) {
+                if (parent.tagName === 'A' && parent.href) {
+                    try {
+                        const href = parent.getAttribute('href') || '';
+                        if (href && href.length > 3 && !href.startsWith('javascript:')) {
+                            t += ' [URL:' + href + ']';
+                            break;
+                        }
+                    } catch(e) {}
+                }
+                parent = parent.parentElement;
+            }
+
+            if (t) texts.push(t);
+        });
+        return texts.join('\\n\\n');
+    } catch(e) {
+        return '';
     }
 }
 """
@@ -482,8 +558,25 @@ async def _fetch_html_playwright(
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 0.2)")
             await asyncio.sleep(0.5)
 
-            # Extract text with URL markers
-            html = await page.evaluate(_EXTRACT_TEXT_JS)
+            # Extract text — prefer targeted extraction from product containers
+            if ready_selector and selector_matched:
+                # First try targeted: extract text only from product card elements
+                html = await page.evaluate(_EXTRACT_PRODUCTS_JS, ready_selector)
+                if html and len(html.strip()) > 100:
+                    logger.info(
+                        "[%s] Targeted extraction from '%s': %d chars",
+                        site_key, ready_selector, len(html),
+                    )
+                else:
+                    # Fall back to full-page extraction (with nav stripped)
+                    logger.info(
+                        "[%s] Targeted extraction too short (%d chars), falling back to full page",
+                        site_key, len(html or ""),
+                    )
+                    html = await page.evaluate(_EXTRACT_TEXT_JS)
+            else:
+                # No selector or not matched — use full-page extraction
+                html = await page.evaluate(_EXTRACT_TEXT_JS)
 
             logger.info("[%s] Fetched %d chars of page text", site_key, len(html))
 

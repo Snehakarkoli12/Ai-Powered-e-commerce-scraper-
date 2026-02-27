@@ -252,6 +252,19 @@ async def compare(request: CompareRequest):
         logger.exception("Unhandled pipeline error: %s", exc)
         raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}") from exc
 
+    # Only include site_statuses for sites that returned results
+    active_statuses = [
+        s for s in state.get_site_statuses_list()
+        if s.listings_found > 0
+    ]
+    # Also track sites that have offers in final results
+    sites_with_offers = {o.platform_key for o in state.final_offers}
+    # Include statuses for sites with offers OR sites that found listings
+    visible_statuses = [
+        s for s in state.get_site_statuses_list()
+        if s.listings_found > 0 or s.marketplace_key in sites_with_offers
+    ]
+
     return CompareResponse(
         query_time_seconds=round(time.time() - start, 3),
         normalized_product=state.normalized_product,
@@ -261,7 +274,7 @@ async def compare(request: CompareRequest):
         offers=state.final_offers,
         recommendation=state.final_offers[0] if state.final_offers else None,
         total_offers_found=len(state.final_offers),
-        site_statuses=state.get_site_statuses_list(),
+        site_statuses=visible_statuses,
         explanation=state.explanation or "",
         errors=state.errors,
     )

@@ -149,7 +149,7 @@ function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     query: query.trim(),
-                    preferences: { mode, min_match_score: 0.25 },
+                    preferences: { mode, min_match_score: 0.4 },
                 }),
             })
 
@@ -250,7 +250,7 @@ function App() {
                             </div>
                             <div className="results-summary__stat">
                                 <div className="results-summary__stat-value">
-                                    {result.selected_marketplaces?.length || 0}
+                                    {result.site_statuses?.filter((s) => s.listings_found > 0).length || 0}
                                 </div>
                                 <div className="results-summary__stat-label">Sites</div>
                             </div>
@@ -273,12 +273,14 @@ function App() {
                         </div>
                     )}
 
-                    {/* Site Statuses */}
+                    {/* Site Statuses — only show sites that have offers */}
                     {result.site_statuses?.length > 0 && (
                         <div className="site-statuses">
                             <div className="site-statuses__title">Marketplace Status</div>
                             <div className="site-statuses__grid">
-                                {result.site_statuses.map((s, i) => (
+                                {result.site_statuses
+                                    .filter((s) => s.listings_found > 0 || s.status === 'ok')
+                                    .map((s, i) => (
                                     <div key={i} className="site-status">
                                         <div className={`site-status__dot ${getStatusDotClass(s.status)}`} />
                                         <span className="site-status__name">{s.marketplace_name || s.marketplace_key}</span>

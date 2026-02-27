@@ -117,6 +117,19 @@ def run_ranker(state: PipelineState) -> PipelineState:
         state.final_offers  = []
         return state
 
+    # ── Deduplicate: keep ONLY the single best offer per site ────────────
+    seen_sites: set = set()
+    deduped: List[NormalizedOffer] = []
+    for offer in scored:
+        if offer.platform_key not in seen_sites:
+            seen_sites.add(offer.platform_key)
+            deduped.append(offer)
+    logger.info(
+        "Ranker: deduped %d -> %d (1 per site)",
+        len(scored), len(deduped),
+    )
+    scored = deduped
+
     # Badge assignment -- ONLY assign when data is meaningful
     # Best Price: only when at least 2 offers have prices and winner is actually cheapest
     best_price_offer = None
