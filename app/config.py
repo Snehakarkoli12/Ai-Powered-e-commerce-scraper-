@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     debug:     bool = False
     log_level: str  = "INFO"
 
+    # ── SMTP Email (Gmail App Password — NOT regular password) ────────────────
+    smtp_host:     str = "smtp.gmail.com"
+    smtp_port:     int = 587
+    smtp_user:     str = ""
+    smtp_password: str = ""
+    smtp_from_name: str = "PriceCompare AI"
+
+    # ── Watchlist / Price Monitor ─────────────────────────────────────────────
+    watchlist_check_interval_hours: int = 6
+    watchlist_max_items_per_user:   int = 20
+    price_history_retention_days:   int = 90
+
     class Config:
         env_file          = ".env"
         env_file_encoding = "utf-8"

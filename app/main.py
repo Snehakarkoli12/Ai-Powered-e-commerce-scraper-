@@ -19,6 +19,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
+import asyncio
+
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from app.schemas import (
     CompareRequest, CompareResponse, PipelineState,
@@ -28,6 +33,21 @@ from app.chatbot.schemas import ChatRequest as ChatRequest
 from app.marketplaces.registry import marketplace_registry
 from app.utils.llm_client import llm_client
 from app.utils.logger import get_logger
+
+# ── Watchlist feature imports ─────────────────────────────────────────────────
+from app.watchlist.schemas import (
+    SaveItemRequest, WatchlistListResponse,
+    WatchlistItemResponse, RemoveItemRequest,
+    WatchlistWithHistory,
+)
+from app.watchlist.service import (
+    save_item, get_user_watchlist, remove_item,
+    get_item_with_history, get_all_active_items,
+)
+from app.watchlist.price_monitor import check_price_for_item
+from app.watchlist.scheduler import start_scheduler, stop_scheduler
+from app.watchlist.models import init_db, get_db, async_session as wl_async_session
+from app.watchlist.email_sender import send_welcome_email, send_watchlist_added_email
 
 logger = get_logger(__name__)
 
@@ -188,10 +208,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("LangGraph compilation failed: %s", e)
 
-    # Optional: init PostgreSQL
+    # Optional: init PostgreSQL (legacy price_history)
     await _init_pg()
 
+    # Watchlist: init DB tables + start scheduler
+    try:
+        await init_db()
+        start_scheduler()
+        logger.info("Watchlist DB initialized + scheduler started")
+    except Exception as e:
+        logger.warning("Watchlist init skipped: %s", e)
+
     yield
+
+    # Shutdown: stop scheduler
+    try:
+        stop_scheduler()
+    except Exception:
+        pass
 
     # Cleanup
     if _redis_client:
@@ -626,3 +660,81 @@ async def scraper_health():
         "sites": sites,
         "status": "ready" if groq_ok else "ERROR: missing GROQ_API_KEY",
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Watchlist — Save for Later + Price Drop Email Alert (Feature 3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/api/watchlist/save", response_model=WatchlistItemResponse)
+async def save_watchlist_item(
+    request: SaveItemRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a product to the user's watchlist for price drop alerts."""
+    result = await save_item(db, request)
+
+    # Send AI-generated confirmation email on EVERY save
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(
+        None,
+        send_watchlist_added_email,
+        request.user_email,
+        request.product_title,
+        request.site or "",
+        request.saved_price or 0,
+        request.alert_threshold,
+        request.product_url or "",
+        request.thumbnail_url or "",
+    )
+
+    return result
+
+
+@app.get("/api/watchlist/{user_email}", response_model=WatchlistListResponse)
+async def get_watchlist(
+    user_email: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all active watchlist items for a user."""
+    return await get_user_watchlist(db, user_email)
+
+
+@app.delete("/api/watchlist/remove")
+async def remove_watchlist_item(
+    request: RemoveItemRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-remove a product from the user's watchlist."""
+    return await remove_item(db, request)
+
+
+@app.get("/api/watchlist/{item_id}/history", response_model=WatchlistWithHistory)
+async def get_price_history(
+    item_id: str,
+    user_email: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single watchlist item with its full price history."""
+    return await get_item_with_history(db, item_id, user_email)
+
+
+@app.post("/api/watchlist/{item_id}/check-now", response_model=WatchlistItemResponse)
+async def manual_price_check(
+    item_id: str,
+    user_email: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger a price check for one watchlist item (re-runs LangGraph pipeline)."""
+    all_items = await get_all_active_items(db)
+    item = next(
+        (i for i in all_items if i.id == item_id and i.user_email == user_email),
+        None,
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    await check_price_for_item(db, item)
+    updated = await get_item_with_history(db, item_id, user_email)
+    return updated.item

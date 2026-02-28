@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react'
 import ChatbotAssistant from './components/ChatbotAssistant'
+import WatchlistButton from './components/WatchlistButton'
+import WatchlistPage from './components/WatchlistPage'
 
 const API_BASE = ''  // Proxied via vite.config.js
 
@@ -74,7 +76,7 @@ function discountPct(base, disc) {
     return Math.round(((base - disc) / base) * 100)
 }
 
-function OfferCard({ offer, index }) {
+function OfferCard({ offer, index, currentQuery, currentMode }) {
     const isRecommended = offer.badges?.includes('Recommended')
     const sb = offer.score_breakdown || {}
     const pct = discountPct(offer.base_price, offer.effective_price)
@@ -152,6 +154,7 @@ function OfferCard({ offer, index }) {
                         No link available
                     </span>
                 )}
+                <WatchlistButton offer={offer} currentQuery={currentQuery} currentMode={currentMode} />
             </div>
 
             {/* Score breakdown bars */}
@@ -193,6 +196,9 @@ function App() {
     const [error, setError] = useState(null)
     const [elapsed, setElapsed] = useState(0)
     const [progress, setProgress] = useState(null) // SSE progress tracking
+    const [showWatchlist, setShowWatchlist] = useState(false)
+    const [currentQuery, setCurrentQuery] = useState('')
+    const [currentMode, setCurrentMode] = useState('balanced')
 
     const handleSearch = useCallback(async (e) => {
         e.preventDefault()
@@ -207,6 +213,9 @@ function App() {
         const timer = setInterval(() => {
             setElapsed(Math.round((Date.now() - startTime) / 1000))
         }, 1000)
+
+        setCurrentQuery(query.trim())
+        setCurrentMode(mode)
 
         try {
             const response = await fetch(`${API_BASE}/api/compare`, {
@@ -314,184 +323,196 @@ function App() {
                 <p className="header__subtitle">
                     AI-powered price comparison across 10+ Indian e-commerce marketplaces
                 </p>
+                <button
+                    className="watchlist-nav-btn"
+                    onClick={() => setShowWatchlist(!showWatchlist)}
+                >
+                    {showWatchlist ? '🔍 Search' : '🔔 Watchlist'}
+                </button>
             </header>
 
-            {/* Search */}
-            <section className="search">
-                <form className="search__form" onSubmit={handleSearch}>
-                    <input
-                        id="search-input"
-                        className="search__input"
-                        type="text"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder="Search any product... e.g. Samsung Galaxy S24 128GB"
-                        disabled={loading}
-                    />
-                    <button
-                        id="search-button"
-                        className={`search__button ${loading ? 'search__button--loading' : ''}`}
-                        type="submit"
-                        disabled={loading || !query.trim()}
-                    >
-                        {loading ? `Searching... ${elapsed}s` : 'Compare Prices'}
-                    </button>
-                </form>
+            {showWatchlist && (
+                <WatchlistPage onBack={() => setShowWatchlist(false)} />
+            )}
 
-                <div className="preferences">
-                    {MODES.map((m) => (
+            {!showWatchlist && <>
+                {/* Search */}
+                <section className="search">
+                    <form className="search__form" onSubmit={handleSearch}>
+                        <input
+                            id="search-input"
+                            className="search__input"
+                            type="text"
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder="Search any product... e.g. Samsung Galaxy S24 128GB"
+                            disabled={loading}
+                        />
                         <button
-                            key={m.key}
-                            className={`pref-chip ${mode === m.key ? 'pref-chip--active' : ''}`}
-                            onClick={() => setMode(m.key)}
-                            type="button"
+                            id="search-button"
+                            className={`search__button ${loading ? 'search__button--loading' : ''}`}
+                            type="submit"
+                            disabled={loading || !query.trim()}
                         >
-                            {m.icon} {m.label}
+                            {loading ? `Searching... ${elapsed}s` : 'Compare Prices'}
                         </button>
-                    ))}
-                </div>
-            </section>
+                    </form>
 
-            {/* Loading with live progress */}
-            {loading && (
-                <div className="loading">
-                    <div className="loading__spinner" />
-                    {progress?.stage === 'scraping' ? (
-                        <>
-                            <div className="loading__text">
-                                Scraping marketplaces... ({progress.completedSites?.length || 0}/{progress.sites?.length || '?'})
+                    <div className="preferences">
+                        {MODES.map((m) => (
+                            <button
+                                key={m.key}
+                                className={`pref-chip ${mode === m.key ? 'pref-chip--active' : ''}`}
+                                onClick={() => setMode(m.key)}
+                                type="button"
+                            >
+                                {m.icon} {m.label}
+                            </button>
+                        ))}
+                    </div>
+                </section>
+
+                {/* Loading with live progress */}
+                {loading && (
+                    <div className="loading">
+                        <div className="loading__spinner" />
+                        {progress?.stage === 'scraping' ? (
+                            <>
+                                <div className="loading__text">
+                                    Scraping marketplaces... ({progress.completedSites?.length || 0}/{progress.sites?.length || '?'})
+                                </div>
+                                <div className="loading__subtext">
+                                    {progress.completedSites?.length > 0
+                                        ? `Done: ${progress.completedSites.join(', ')}`
+                                        : 'Launching browsers, extracting prices...'}
+                                </div>
+                            </>
+                        ) : progress?.stage === 'matching' ? (
+                            <>
+                                <div className="loading__text">Matching products...</div>
+                                <div className="loading__subtext">{progress.matchedCount} offers matched so far</div>
+                            </>
+                        ) : progress?.stage === 'ranking' ? (
+                            <>
+                                <div className="loading__text">Ranking offers...</div>
+                                <div className="loading__subtext">{progress.rankedCount} offers ranked</div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="loading__text">Scraping {mode === 'balanced' ? 'all' : ''} marketplaces...</div>
+                                <div className="loading__subtext">Launching browsers, extracting prices, matching products</div>
+                            </>
+                        )}
+                        <div className="loading__elapsed">{elapsed}s</div>
+                    </div>
+                )}
+
+                {/* Error */}
+                {error && !loading && (
+                    <div className="errors">
+                        <div className="error-item">⚠️ {error}</div>
+                    </div>
+                )}
+
+                {/* Results */}
+                {result && !loading && (
+                    <div>
+                        {/* Summary */}
+                        <div className="results-summary">
+                            <div className="results-summary__title">
+                                {result.normalized_product?.attributes?.brand}{' '}
+                                {result.normalized_product?.attributes?.model}{' '}
+                                {result.normalized_product?.attributes?.storage || ''}
                             </div>
-                            <div className="loading__subtext">
-                                {progress.completedSites?.length > 0
-                                    ? `Done: ${progress.completedSites.join(', ')}`
-                                    : 'Launching browsers, extracting prices...'}
+                            <div className="results-summary__stats">
+                                <div className="results-summary__stat">
+                                    <div className="results-summary__stat-value">{result.total_offers_found || 0}</div>
+                                    <div className="results-summary__stat-label">Offers</div>
+                                </div>
+                                <div className="results-summary__stat">
+                                    <div className="results-summary__stat-value">
+                                        {result.site_statuses?.filter((s) => s.listings_found > 0).length || 0}
+                                    </div>
+                                    <div className="results-summary__stat-label">Sites</div>
+                                </div>
+                                <div className="results-summary__stat">
+                                    <div className="results-summary__stat-value">
+                                        {result.query_time_seconds ? `${result.query_time_seconds}s` : '--'}
+                                    </div>
+                                    <div className="results-summary__stat-label">Time</div>
+                                </div>
                             </div>
-                        </>
-                    ) : progress?.stage === 'matching' ? (
-                        <>
-                            <div className="loading__text">Matching products...</div>
-                            <div className="loading__subtext">{progress.matchedCount} offers matched so far</div>
-                        </>
-                    ) : progress?.stage === 'ranking' ? (
-                        <>
-                            <div className="loading__text">Ranking offers...</div>
-                            <div className="loading__subtext">{progress.rankedCount} offers ranked</div>
-                        </>
-                    ) : (
-                        <>
-                            <div className="loading__text">Scraping {mode === 'balanced' ? 'all' : ''} marketplaces...</div>
-                            <div className="loading__subtext">Launching browsers, extracting prices, matching products</div>
-                        </>
-                    )}
-                    <div className="loading__elapsed">{elapsed}s</div>
-                </div>
-            )}
-
-            {/* Error */}
-            {error && !loading && (
-                <div className="errors">
-                    <div className="error-item">⚠️ {error}</div>
-                </div>
-            )}
-
-            {/* Results */}
-            {result && !loading && (
-                <div>
-                    {/* Summary */}
-                    <div className="results-summary">
-                        <div className="results-summary__title">
-                            {result.normalized_product?.attributes?.brand}{' '}
-                            {result.normalized_product?.attributes?.model}{' '}
-                            {result.normalized_product?.attributes?.storage || ''}
                         </div>
-                        <div className="results-summary__stats">
-                            <div className="results-summary__stat">
-                                <div className="results-summary__stat-value">{result.total_offers_found || 0}</div>
-                                <div className="results-summary__stat-label">Offers</div>
-                            </div>
-                            <div className="results-summary__stat">
-                                <div className="results-summary__stat-value">
-                                    {result.site_statuses?.filter((s) => s.listings_found > 0).length || 0}
+
+                        {/* AI Explanation */}
+                        {result.explanation && (
+                            <div className="explanation">
+                                <div className="explanation__title">
+                                    <span className="explanation__icon">🤖</span> AI Recommendation
                                 </div>
-                                <div className="results-summary__stat-label">Sites</div>
+                                <div className="explanation__text">{result.explanation}</div>
                             </div>
-                            <div className="results-summary__stat">
-                                <div className="results-summary__stat-value">
-                                    {result.query_time_seconds ? `${result.query_time_seconds}s` : '--'}
+                        )}
+
+                        {/* Site Statuses — only show sites that have offers */}
+                        {result.site_statuses?.length > 0 && (
+                            <div className="site-statuses">
+                                <div className="site-statuses__title">Marketplace Status</div>
+                                <div className="site-statuses__grid">
+                                    {result.site_statuses
+                                        .filter((s) => s.listings_found > 0 || s.status === 'ok')
+                                        .map((s, i) => (
+                                            <div key={i} className="site-status">
+                                                <div className={`site-status__dot ${getStatusDotClass(s.status)}`} />
+                                                <span className="site-status__name">{s.marketplace_name || s.marketplace_key}</span>
+                                                {s.listings_found > 0 && (
+                                                    <span className="site-status__count">({s.listings_found})</span>
+                                                )}
+                                            </div>
+                                        ))}
                                 </div>
-                                <div className="results-summary__stat-label">Time</div>
                             </div>
+                        )}
+
+                        {/* Pipeline Errors */}
+                        {result.errors?.length > 0 && (
+                            <div className="errors">
+                                {result.errors.map((err, i) => (
+                                    <div key={i} className="error-item">⚠️ {err}</div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Offer Cards */}
+                        {result.final_offers?.length > 0 ? (
+                            <div className="offers-grid">
+                                {result.final_offers.map((offer, i) => (
+                                    <OfferCard key={i} offer={offer} index={i} currentQuery={currentQuery} currentMode={currentMode} />
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="empty-state">
+                                <div className="empty-state__icon">📭</div>
+                                <div className="empty-state__title">No matching offers found</div>
+                                <div className="empty-state__text">
+                                    Try a different product or broader search terms. Some sites may be temporarily blocked.
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Initial Empty State */}
+                {!result && !loading && !error && (
+                    <div className="empty-state">
+                        <div className="empty-state__icon">🛒</div>
+                        <div className="empty-state__title">Find the best price across India</div>
+                        <div className="empty-state__text">
+                            Search for any product to compare prices across Amazon, Flipkart, Croma, Meesho, and more.
                         </div>
                     </div>
-
-                    {/* AI Explanation */}
-                    {result.explanation && (
-                        <div className="explanation">
-                            <div className="explanation__title">
-                                <span className="explanation__icon">🤖</span> AI Recommendation
-                            </div>
-                            <div className="explanation__text">{result.explanation}</div>
-                        </div>
-                    )}
-
-                    {/* Site Statuses — only show sites that have offers */}
-                    {result.site_statuses?.length > 0 && (
-                        <div className="site-statuses">
-                            <div className="site-statuses__title">Marketplace Status</div>
-                            <div className="site-statuses__grid">
-                                {result.site_statuses
-                                    .filter((s) => s.listings_found > 0 || s.status === 'ok')
-                                    .map((s, i) => (
-                                        <div key={i} className="site-status">
-                                            <div className={`site-status__dot ${getStatusDotClass(s.status)}`} />
-                                            <span className="site-status__name">{s.marketplace_name || s.marketplace_key}</span>
-                                            {s.listings_found > 0 && (
-                                                <span className="site-status__count">({s.listings_found})</span>
-                                            )}
-                                        </div>
-                                    ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Pipeline Errors */}
-                    {result.errors?.length > 0 && (
-                        <div className="errors">
-                            {result.errors.map((err, i) => (
-                                <div key={i} className="error-item">⚠️ {err}</div>
-                            ))}
-                        </div>
-                    )}
-
-                    {/* Offer Cards */}
-                    {result.final_offers?.length > 0 ? (
-                        <div className="offers-grid">
-                            {result.final_offers.map((offer, i) => (
-                                <OfferCard key={i} offer={offer} index={i} />
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="empty-state">
-                            <div className="empty-state__icon">📭</div>
-                            <div className="empty-state__title">No matching offers found</div>
-                            <div className="empty-state__text">
-                                Try a different product or broader search terms. Some sites may be temporarily blocked.
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* Initial Empty State */}
-            {!result && !loading && !error && (
-                <div className="empty-state">
-                    <div className="empty-state__icon">🛒</div>
-                    <div className="empty-state__title">Find the best price across India</div>
-                    <div className="empty-state__text">
-                        Search for any product to compare prices across Amazon, Flipkart, Croma, Meesho, and more.
-                    </div>
-                </div>
-            )}
+                )}
+            </>}
         </div>
     )
 }
